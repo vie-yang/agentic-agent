@@ -20,6 +20,14 @@ export interface MCPConfigDB {
     enabled: boolean;
 }
 
+interface FileSearchStoreDB {
+    id: string;
+    agent_id: string;
+    store_name: string;
+    display_name: string;
+    enabled: boolean;
+}
+
 interface GenerateOptions {
     apiKey: string;
     model: string;
@@ -193,7 +201,8 @@ async function callMCPToolWithTracking(
 export async function generateChatWithMCP(
     messages: ChatMessage[],
     options: GenerateOptions,
-    mcpConfigs: MCPConfigDB[]
+    mcpConfigs: MCPConfigDB[],
+    fileSearchStore?: FileSearchStoreDB | null
 ): Promise<ChatResult> {
     const { apiKey, model, systemPrompt, temperature = 0.7, maxTokens = 2048 } = options;
 
@@ -226,6 +235,19 @@ export async function generateChatWithMCP(
         });
     }
 
+    // Build tools array including file search
+    const buildTools = () => {
+        const tools: any[] = [];
+        if (fileSearchStore?.enabled && fileSearchStore?.store_name) {
+            tools.push({
+                fileSearch: {
+                    fileSearchStoreNames: [fileSearchStore.store_name],
+                },
+            });
+        }
+        return tools.length > 0 ? tools : undefined;
+    };
+
     // If no MCP configs, do basic generation with thinking (using stream to capture thoughts)
     if (enabledConfigs.length === 0) {
         const stream = await genAI.models.generateContentStream({
@@ -238,6 +260,7 @@ export async function generateChatWithMCP(
                     includeThoughts: true,
                     thinkingBudget: 8192,
                 },
+                tools: buildTools(),
             },
         });
 
@@ -286,6 +309,16 @@ export async function generateChatWithMCP(
     }
 
     try {
+        // Combine MCP tools with file search tool
+        const allTools: any[] = [...mcpTools];
+        if (fileSearchStore?.enabled && fileSearchStore?.store_name) {
+            allTools.push({
+                fileSearch: {
+                    fileSearchStoreNames: [fileSearchStore.store_name],
+                },
+            });
+        }
+
         // First generate to check if tool calls are needed
         const initialResponse = await genAI.models.generateContent({
             model: model,
@@ -293,7 +326,7 @@ export async function generateChatWithMCP(
             config: {
                 temperature: temperature,
                 maxOutputTokens: maxTokens,
-                tools: mcpTools.length > 0 ? mcpTools : undefined,
+                tools: allTools.length > 0 ? allTools : undefined,
             },
         });
 

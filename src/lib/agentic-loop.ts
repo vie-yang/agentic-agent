@@ -289,6 +289,7 @@ export async function executeAgenticLoop(
     console.log(`Model: ${model}, Max Iterations: ${maxIterations}`);
     console.log(`Tools available: ${toolDeclarations.length}`);
     console.log(`Messages: ${messages.length}`);
+    console.log(`FileSearchStore: ${fileSearchStore ? JSON.stringify({ enabled: fileSearchStore.enabled, store_name: fileSearchStore.store_name }) : 'null'}`);
 
     let iteration = 0;
     let taskComplete = false;

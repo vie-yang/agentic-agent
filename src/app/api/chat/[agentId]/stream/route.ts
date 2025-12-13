@@ -161,6 +161,20 @@ export async function POST(
             [agentId]
         );
 
+        // Get File Search store for RAG
+        const fileSearchStore = await queryOne<{
+            id: string;
+            agent_id: string;
+            store_name: string;
+            display_name: string;
+            enabled: boolean;
+        }>(
+            'SELECT * FROM file_search_stores WHERE agent_id = ? AND enabled = true',
+            [agentId]
+        );
+
+        console.log(`Stream: File Search store: ${fileSearchStore?.store_name || 'none'}, enabled: ${fileSearchStore?.enabled}`);
+
         // Check if agentic mode
         if (llmConfig.agent_mode !== 'agentic') {
             return new Response(JSON.stringify({ error: 'Streaming only available for agentic mode' }), {
@@ -212,7 +226,8 @@ export async function POST(
                             // Send SSE event
                             const data = JSON.stringify(update);
                             controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-                        }
+                        },
+                        fileSearchStore
                     );
 
                     // Save to database

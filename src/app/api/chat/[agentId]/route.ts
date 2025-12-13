@@ -216,7 +216,8 @@ export async function POST(
             [agentId]
         );
 
-        console.log(`File Search store: ${fileSearchStore?.store_name || 'none'}`);
+        console.log(`File Search store query result:`, JSON.stringify(fileSearchStore));
+        console.log(`File Search store: ${fileSearchStore?.store_name || 'none'}, enabled: ${fileSearchStore?.enabled}`);
 
         if (isAgenticMode) {
             // Use agentic loop for multi-step task execution
@@ -255,7 +256,8 @@ export async function POST(
                     temperature: llmConfig.temperature,
                     maxTokens: llmConfig.max_tokens,
                 },
-                mcpConfigs || []
+                mcpConfigs || [],
+                fileSearchStore
             );
         }
 

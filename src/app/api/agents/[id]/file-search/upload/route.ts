@@ -116,31 +116,53 @@ export async function POST(
             // Upload to Gemini FileSearchStore
             const ai = new GoogleGenAI({ apiKey });
 
-            // Determine mime type
+            // Determine and validate mime type
             let mimeType = file.type;
-            if (!mimeType || mimeType === 'application/octet-stream') {
-                // Fallback based on file extension
-                const ext = file.name.split('.').pop()?.toLowerCase();
-                const mimeMap: Record<string, string> = {
-                    'pdf': 'application/pdf',
-                    'txt': 'text/plain',
-                    'md': 'text/markdown',
-                    'csv': 'text/csv',
-                    'json': 'application/json',
-                    'html': 'text/html',
-                    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                };
+
+            // Clean MIME type by removing charset and other parameters
+            const cleanMimeType = (mime: string): string => {
+                if (!mime || typeof mime !== 'string') return '';
+                return mime.split(';')[0].trim();
+            };
+
+            // Helper to check if MIME type is in valid format (type/subtype)
+            const isValidMimeType = (mime: string): boolean => {
+                if (!mime) return false;
+                // MIME type must be in format: type/subtype (e.g., 'text/plain', 'application/pdf')
+                return /^[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+$/.test(mime);
+            };
+
+            // Clean the browser's MIME type first
+            mimeType = cleanMimeType(mimeType);
+
+            // Fallback MIME type based on file extension
+            const ext = file.name.split('.').pop()?.toLowerCase();
+            const mimeMap: Record<string, string> = {
+                'pdf': 'application/pdf',
+                'txt': 'text/plain',
+                'md': 'text/markdown',
+                'csv': 'text/csv',
+                'json': 'application/json',
+                'html': 'text/html',
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            };
+
+            // Use browser MIME type only if it's valid, otherwise fallback to extension-based lookup
+            if (!isValidMimeType(mimeType)) {
                 mimeType = (ext && mimeMap[ext]) || 'text/plain';
+                console.log(`Invalid MIME type detected, using fallback: ${mimeType}`);
             }
 
-            console.log(`File mimeType: ${mimeType}`);
+            console.log(`Original file.type: "${file.type}", file extension: "${file.name.split('.').pop()}"`);
 
+            // Let Google infer the MIME type automatically
+            // The SDK documentation states: "The system generally infers the MIME type if not explicitly provided"
             let operation = await ai.fileSearchStores.uploadToFileSearchStore({
                 file: tempFilePath,
                 fileSearchStoreName: store.store_name,
                 config: {
                     displayName: file.name,
-                    mimeType: mimeType,
+                    // mimeType is omitted - let Google infer it from the file content
                 },
             });
 
