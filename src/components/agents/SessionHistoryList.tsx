@@ -47,7 +47,12 @@ interface Pagination {
     totalPages: number;
 }
 
-export default function AgentHistoryPage() {
+interface SessionHistoryListProps {
+    agentId?: string;
+    showHeader?: boolean;
+}
+
+export default function SessionHistoryList({ agentId, showHeader = true }: SessionHistoryListProps) {
     const [sessions, setSessions] = useState<ChatSession[]>([]);
     const [pagination, setPagination] = useState<Pagination>({
         page: 1,
@@ -61,7 +66,11 @@ export default function AgentHistoryPage() {
     const fetchSessions = async (page: number = 1) => {
         setLoading(true);
         try {
-            const response = await fetch(`/api/sessions?page=${page}&limit=20`);
+            let url = `/api/sessions?page=${page}&limit=20`;
+            if (agentId) {
+                url += `&agentId=${agentId}`;
+            }
+            const response = await fetch(url);
             if (!response.ok) throw new Error('Failed to fetch');
             const data = await response.json();
             setSessions(data.sessions);
@@ -75,7 +84,8 @@ export default function AgentHistoryPage() {
 
     useEffect(() => {
         fetchSessions();
-    }, []);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [agentId]);
 
     const handleDelete = async (sessionId: string) => {
         if (!confirm('Are you sure you want to delete this chat session?')) return;
@@ -101,45 +111,51 @@ export default function AgentHistoryPage() {
 
     const filteredSessions = sessions.filter(
         (session) =>
-            session.agent_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            session.id.toLowerCase().includes(searchQuery.toLowerCase())
+            (session.agent_name?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+            session.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            (session.client_name?.toLowerCase() || '').includes(searchQuery.toLowerCase())
     );
 
     return (
         <div className="space-y-6">
-            {/* Page Header */}
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight">Chat History</h1>
-                    <p className="text-muted-foreground">View and manage all chat conversations</p>
+            {/* Header */}
+            {showHeader && (
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h2 className="text-lg font-semibold tracking-tight">Chat History</h2>
+                        <p className="text-sm text-muted-foreground">View past conversations</p>
+                    </div>
                 </div>
-                <Button variant="outline" onClick={() => fetchSessions(pagination.page)}>
-                    <RefreshCw className="mr-2 h-4 w-4" />
+            )}
+
+            {/* Controls */}
+            <div className="flex items-center justify-between gap-4">
+                <Card className="flex-1">
+                    <CardContent className="p-2">
+                        <div className="flex items-center gap-2">
+                            <Search className="h-4 w-4 text-muted-foreground ml-2" />
+                            <Input
+                                type="text"
+                                placeholder={agentId ? "Search by session ID or client..." : "Search by agent, session ID or client..."}
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="border-0 shadow-none focus-visible:ring-0 h-8"
+                            />
+                        </div>
+                    </CardContent>
+                </Card>
+                <Button variant="outline" onClick={() => fetchSessions(pagination.page)} size="sm">
+                    <RefreshCw className="mr-2 h-3 w-3" />
                     Refresh
                 </Button>
             </div>
 
-            {/* Search */}
-            <Card>
-                <CardContent className="p-4">
-                    <div className="flex items-center gap-3">
-                        <Search className="h-5 w-5 text-muted-foreground" />
-                        <Input
-                            type="text"
-                            placeholder="Search by agent name or session ID..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="border-0 shadow-none focus-visible:ring-0"
-                        />
-                    </div>
-                </CardContent>
-            </Card>
 
             {/* Loading */}
             {loading && (
-                <div className="flex flex-col items-center justify-center py-16">
-                    <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-200 border-t-primary-600" />
-                    <p className="mt-4 text-muted-foreground">Loading sessions...</p>
+                <div className="flex flex-col items-center justify-center py-12">
+                    <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary-200 border-t-primary-600" />
+                    <p className="mt-2 text-sm text-muted-foreground">Loading sessions...</p>
                 </div>
             )}
 
@@ -147,12 +163,12 @@ export default function AgentHistoryPage() {
             {!loading && filteredSessions.length === 0 && (
                 <Card>
                     <CardContent className="flex flex-col items-center justify-center py-10 text-center">
-                        <div className="rounded-full bg-primary-100 p-4 mb-4">
-                            <MessageSquare className="h-8 w-8 text-primary-600" />
+                        <div className="rounded-full bg-primary-100 p-3 mb-3">
+                            <MessageSquare className="h-6 w-6 text-primary-600" />
                         </div>
-                        <h3 className="text-lg font-semibold mb-2">No chat sessions yet</h3>
-                        <p className="text-muted-foreground max-w-md">
-                            Chat sessions will appear here once users start interacting with your agents.
+                        <h3 className="text-base font-semibold mb-1">No chat sessions found</h3>
+                        <p className="text-sm text-muted-foreground max-w-xs">
+                            {searchQuery ? 'Try adjusting your search query.' : 'Sessions will appear here once they are created.'}
                         </p>
                     </CardContent>
                 </Card>
@@ -164,7 +180,7 @@ export default function AgentHistoryPage() {
                     <Table>
                         <TableHeader>
                             <TableRow>
-                                <TableHead>Agent</TableHead>
+                                {!agentId && <TableHead>Agent</TableHead>}
                                 <TableHead>Client</TableHead>
                                 <TableHead>Started</TableHead>
                                 <TableHead>Messages</TableHead>
@@ -176,41 +192,51 @@ export default function AgentHistoryPage() {
                         <TableBody>
                             {filteredSessions.map((session) => (
                                 <TableRow key={session.id}>
-                                    <TableCell>
-                                        <div className="flex items-center gap-3">
-                                            <div className="rounded-full bg-primary-100 p-2">
-                                                <Bot className="h-4 w-4 text-primary-600" />
-                                            </div>
-                                            <div>
-                                                <div className="font-medium">{session.agent_name || 'Unknown Agent'}</div>
-                                                <div className="text-xs text-muted-foreground font-mono">
-                                                    {session.id.substring(0, 8)}...
+                                    {!agentId && (
+                                        <TableCell>
+                                            <div className="flex items-center gap-2">
+                                                <div className="rounded-full bg-primary-100 p-1.5">
+                                                    <Bot className="h-3 w-3 text-primary-600" />
+                                                </div>
+                                                <div>
+                                                    <div className="font-medium text-sm">{session.agent_name || 'Unknown'}</div>
+                                                    <div className="text-[10px] text-muted-foreground font-mono">
+                                                        {session.id.substring(0, 6)}...
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    </TableCell>
+                                        </TableCell>
+                                    )}
                                     <TableCell>
                                         {session.client_name ? (
                                             <div>
-                                                <div className="font-medium">{session.client_name}</div>
+                                                <div className="font-medium text-sm">{session.client_name}</div>
                                                 {session.client_level && (
-                                                    <Badge variant="outline" className="mt-1 text-xs">
+                                                    <Badge variant="outline" className="mt-0.5 text-[10px] h-4 px-1.5">
                                                         {session.client_level}
                                                     </Badge>
                                                 )}
                                             </div>
                                         ) : (
-                                            <span className="text-muted-foreground text-sm">-</span>
+                                            <div className="flex flex-col">
+                                                 <span className="text-muted-foreground text-sm">-</span>
+                                                 {/* Show partial session ID if no client name, useful when filtered by agent */}
+                                                 {agentId && (
+                                                    <span className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                                                        {session.id.substring(0, 8)}...
+                                                    </span>
+                                                 )}
+                                            </div>
                                         )}
                                     </TableCell>
                                     <TableCell>
-                                        <div className="flex items-center gap-2 text-muted-foreground">
-                                            <Clock className="h-4 w-4" />
+                                        <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
+                                            <Clock className="h-3 w-3" />
                                             {formatDate(session.started_at)}
                                         </div>
                                     </TableCell>
                                     <TableCell>
-                                        <Badge variant="secondary" className="gap-1">
+                                        <Badge variant="secondary" className="gap-1 font-normal">
                                             <MessageSquare className="h-3 w-3" />
                                             {session.message_count}
                                         </Badge>
@@ -218,7 +244,7 @@ export default function AgentHistoryPage() {
                                     <TableCell>
                                         <Badge
                                             variant={session.tool_call_count > 0 ? 'success' : 'secondary'}
-                                            className="gap-1"
+                                            className="gap-1 font-normal"
                                         >
                                             <Wrench className="h-3 w-3" />
                                             {session.tool_call_count}
@@ -231,8 +257,8 @@ export default function AgentHistoryPage() {
                                     </TableCell>
                                     <TableCell className="text-right">
                                         <div className="flex items-center justify-end gap-2">
-                                            <Link href={`/agents/history/${session.id}`}>
-                                                <Button variant="ghost" size="sm">
+                                            <Link href={`/agents/${session.agent_id}/session/${session.id}`}>
+                                                <Button variant="ghost" size="sm" className="h-8">
                                                     View
                                                 </Button>
                                             </Link>
@@ -240,7 +266,7 @@ export default function AgentHistoryPage() {
                                                 variant="ghost"
                                                 size="icon"
                                                 onClick={() => handleDelete(session.id)}
-                                                className="text-red-500 hover:text-red-600 hover:bg-red-50"
+                                                className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50"
                                             >
                                                 <Trash2 className="h-4 w-4" />
                                             </Button>

@@ -8,6 +8,8 @@ interface Agent {
     id: string;
     name: string;
     system_prompt: string | null;
+    embed_token: string | null;
+    allowed_domains: string | null;
 }
 
 interface LLMConfig {
@@ -27,6 +29,7 @@ interface StreamRequestBody {
     sessionId?: string;
     clientName?: string;
     clientLevel?: string;
+    embedToken?: string;
 }
 
 // Helper to save chat session and messages
@@ -129,6 +132,39 @@ export async function POST(
             });
         }
 
+        // Security Check: Token and Domain Validation
+        const isInternalRequest = !request.headers.get('origin') || request.headers.get('origin')?.includes(request.headers.get('host') || '');
+        
+        if (!isInternalRequest) {
+            const providedToken = body.embedToken || request.headers.get('x-embed-token') || request.headers.get('authorization')?.replace('Bearer ', '');
+            
+            if (agent.embed_token && providedToken !== agent.embed_token) {
+                return new Response(JSON.stringify({ error: 'Unauthorized: Invalid embed token' }), {
+                    status: 401,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+
+            if (agent.allowed_domains) {
+                const origin = request.headers.get('origin') || request.headers.get('referer');
+                const allowedList = agent.allowed_domains.split(',').map(d => d.trim().toLowerCase());
+                
+                if (origin) {
+                    const originUrl = new URL(origin);
+                    const isAllowed = allowedList.some(domain => 
+                        originUrl.hostname === domain || originUrl.hostname.endsWith('.' + domain)
+                    );
+                    
+                    if (!isAllowed) {
+                        return new Response(JSON.stringify({ error: 'Forbidden: Domain not allowed' }), {
+                            status: 403,
+                            headers: { 'Content-Type': 'application/json' },
+                        });
+                    }
+                }
+            }
+        }
+
         // Get LLM config
         const llmConfig = await queryOne<LLMConfig>(
             'SELECT * FROM llm_configs WHERE agent_id = ?',
@@ -143,7 +179,7 @@ export async function POST(
         }
 
         // Get API key
-        const apiKeyRecord = await queryOne<APIKey>(
+        const apiKeyRecord = await queryOne<{ api_key: string }>(
             'SELECT api_key FROM api_keys WHERE agent_id = ? AND provider = ?',
             [agentId, 'google']
         );
@@ -173,7 +209,7 @@ export async function POST(
             [agentId]
         );
 
-        console.log(`Stream: File Search store: ${fileSearchStore?.store_name || 'none'}, enabled: ${fileSearchStore?.enabled}`);
+        console.log(`[Stream] File Search store: ${fileSearchStore?.store_name || 'none'}`);
 
         // Check if agentic mode
         if (llmConfig.agent_mode !== 'agentic') {

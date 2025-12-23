@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { query, queryOne } from '@/lib/db';
+import { queryOne, query } from '@/lib/db';
+import { getToken } from 'next-auth/jwt';
 
 interface ChatSession {
     id: string;
@@ -11,6 +12,7 @@ interface ChatSession {
     ended_at: string | null;
     message_count: number;
     tool_call_count: number;
+    embed_token?: string;
 }
 
 interface ChatMessage {
@@ -45,7 +47,7 @@ export async function GET(
 
         // Get session with agent name
         const session = await queryOne<ChatSession>(
-            `SELECT cs.*, a.name as agent_name 
+            `SELECT cs.*, a.name as agent_name, a.embed_token 
        FROM chat_sessions cs 
        LEFT JOIN agents a ON cs.agent_id = a.id 
        WHERE cs.id = ?`,
@@ -56,6 +58,35 @@ export async function GET(
             return NextResponse.json(
                 { error: 'Session not found' },
                 { status: 404 }
+            );
+        }
+
+        // Authorization check
+        // 1. Check for Embed Token (Public Widget)
+        const embedTokenHeader = request.headers.get('x-embed-token') || 
+                                 request.headers.get('authorization')?.replace('Bearer ', '');
+        
+        // 2. Check for Authenticated User (Admin)
+        let isAuthorized = false;
+
+        if (embedTokenHeader) {
+            // Validate token against agent's token
+            // Ensure session belongs to an agent with this token
+            if (session.embed_token && session.embed_token === embedTokenHeader) {
+                isAuthorized = true;
+            }
+        } else {
+            // Fallback to NextAuth for internal admin usage
+            const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET || 'agentforge-secret-key-change-in-production' });
+            if (token) {
+                isAuthorized = true;
+            }
+        }
+
+        if (!isAuthorized) {
+            return NextResponse.json(
+                { error: 'Unauthorized Access' },
+                { status: 401 }
             );
         }
 

@@ -45,7 +45,6 @@ const navItems: NavItem[] = [
         subItems: [
             { href: '/agents', label: 'Overview', icon: <LayoutDashboard className="h-4 w-4" />, exact: true },
             { href: '/agents/list', label: 'Agent List', icon: <List className="h-4 w-4" /> },
-            { href: '/agents/history', label: 'Chat History', icon: <MessageSquare className="h-4 w-4" /> },
         ],
     },
     { href: '/users', label: 'Users', icon: <User className="h-5 w-5" /> },

@@ -7,6 +7,8 @@ interface Agent {
     description: string | null;
     system_prompt: string | null;
     status: 'active' | 'inactive' | 'draft';
+    embed_token: string | null;
+    allowed_domains: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -48,7 +50,7 @@ export async function PUT(
     try {
         const { id } = await params;
         const body = await request.json();
-        const { name, description, system_prompt, status } = body;
+        const { name, description, system_prompt, status, embed_token, allowed_domains } = body;
 
         // Check if agent exists
         const existing = await queryOne<Agent>(
@@ -82,6 +84,14 @@ export async function PUT(
         if (status !== undefined) {
             updates.push('status = ?');
             values.push(status);
+        }
+        if (embed_token !== undefined) {
+            updates.push('embed_token = ?');
+            values.push(embed_token);
+        }
+        if (allowed_domains !== undefined) {
+            updates.push('allowed_domains = ?');
+            values.push(allowed_domains);
         }
 
         if (updates.length > 0) {

@@ -1,19 +1,24 @@
-import mysql from 'mysql2/promise';
+import mysql from "mysql2/promise";
+import fs from 'fs';
+import path from 'path';
 
 // Create connection pool
 // Create connection pool
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'wisnu123',
-  database: process.env.DB_NAME || 'fac_chat2',
-  port: parseInt(process.env.DB_PORT || '3306'),
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "",
+  database: process.env.DB_NAME || "fac_chat2",
+  port: parseInt(process.env.DB_PORT || "3306"),
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  ssl: process.env.DB_SSL === 'true' ? {
-    rejectUnauthorized: true
-  } : undefined,
+  ssl:
+    process.env.DB_SSL === "true"
+      ? {
+          rejectUnauthorized: true,
+        }
+      : undefined,
 });
 
 // Helper to create a standalone connection (for setup/testing)
@@ -28,7 +33,10 @@ export async function query<T>(sql: string, params?: unknown[]): Promise<T> {
 }
 
 // Helper function to get a single row
-export async function queryOne<T>(sql: string, params?: unknown[]): Promise<T | null> {
+export async function queryOne<T>(
+  sql: string,
+  params?: unknown[]
+): Promise<T | null> {
   const results = await query<T[]>(sql, params);
   return Array.isArray(results) && results.length > 0 ? results[0] : null;
 }
@@ -38,239 +46,227 @@ export async function initializeDatabase(): Promise<void> {
   const connection = await pool.getConnection();
 
   try {
-    // Create agents table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS agents (
-        id VARCHAR(36) PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        description TEXT,
-        system_prompt TEXT,
-        status ENUM('active', 'inactive', 'draft') DEFAULT 'draft',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `);
+    // Read schema from schema.sql
+    const schemaPath = path.join(process.cwd(), 'src/lib/schema.sql');
+    if (!fs.existsSync(schemaPath)) {
+        throw new Error(`Schema file not found at ${schemaPath}`);
+    }
+    
+    const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+    const queries = schemaSql
+        .split(';')
+        .map(statement => {
+            return statement
+                .split('\n')
+                .filter(line => !line.trim().startsWith('--')) // Remove comment lines
+                .join('\n')
+                .trim();
+        })
+        .filter(q => q.length > 0);
 
-    // Create llm_configs table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS llm_configs (
-        id VARCHAR(36) PRIMARY KEY,
-        agent_id VARCHAR(36) NOT NULL,
-        provider VARCHAR(50) DEFAULT 'google',
-        model VARCHAR(100) DEFAULT 'gemini-2.5-flash',
-        temperature FLOAT DEFAULT 0.7,
-        max_tokens INT DEFAULT 2048,
-        agent_mode ENUM('simple', 'agentic') DEFAULT 'simple',
-        max_iterations INT DEFAULT 10,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-      )
-    `);
+    for (const sql of queries) {
+        try {
+            await connection.query(sql);
+        } catch (err) {
+            console.warn(`Warning executing schema query: ${sql.substring(0, 50)}...`, err);
+        }
+    }
 
-    // Create api_keys table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS api_keys (
-        id VARCHAR(36) PRIMARY KEY,
-        agent_id VARCHAR(36) NOT NULL,
-        provider VARCHAR(50) NOT NULL,
-        api_key TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-      )
-    `);
 
-    // Create mcp_configs table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS mcp_configs (
-        id VARCHAR(36) PRIMARY KEY,
-        agent_id VARCHAR(36) NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        type ENUM('local', 'cloud') DEFAULT 'local',
-        config_json TEXT,
-        enabled BOOLEAN DEFAULT true,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-      )
-    `);
 
-    // Create rag_configs table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS rag_configs (
-        id VARCHAR(36) PRIMARY KEY,
-        agent_id VARCHAR(36) NOT NULL,
-        type VARCHAR(50) DEFAULT 'opensearch',
-        connection_config TEXT,
-        index_name VARCHAR(255),
-        enabled BOOLEAN DEFAULT true,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-      )
-    `);
+    // ==========================================
+    // SEED INITIAL DATA
+    // ==========================================
 
-    // Create file_search_stores table for Gemini File Search RAG
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS file_search_stores (
-        id VARCHAR(36) PRIMARY KEY,
-        agent_id VARCHAR(36) NOT NULL,
-        store_name VARCHAR(255) NOT NULL,
-        display_name VARCHAR(255),
-        enabled BOOLEAN DEFAULT true,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-      )
-    `);
+    // 1. Seed Permissions
+    const permissions = [
+      // Users Module
+      {
+        code: "users.view",
+        name: "View Users",
+        category: "Users",
+        description: "Can view user list",
+      },
+      {
+        code: "users.manage",
+        name: "Manage Users",
+        category: "Users",
+        description: "Can create, edit, delete users",
+      },
 
-    // Create file_search_documents table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS file_search_documents (
-        id VARCHAR(36) PRIMARY KEY,
-        store_id VARCHAR(36) NOT NULL,
-        file_name VARCHAR(255) NOT NULL,
-        display_name VARCHAR(255),
-        mime_type VARCHAR(100),
-        file_size_bytes BIGINT,
-        status ENUM('pending', 'processing', 'ready', 'error') DEFAULT 'pending',
-        error_message TEXT,
-        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (store_id) REFERENCES file_search_stores(id) ON DELETE CASCADE
-      )
-    `);
+      // Roles Module
+      {
+        code: "roles.view",
+        name: "View Roles",
+        category: "Roles",
+        description: "Can view roles",
+      },
+      {
+        code: "roles.manage",
+        name: "Manage Roles",
+        category: "Roles",
+        description: "Can create, edit, delete roles",
+      },
 
-    // Create chat_sessions table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS chat_sessions (
-        id VARCHAR(36) PRIMARY KEY,
-        agent_id VARCHAR(36) NOT NULL,
-        session_source VARCHAR(100) DEFAULT 'widget',
-        user_identifier VARCHAR(255),
-        client_name VARCHAR(255),
-        client_level VARCHAR(50),
-        started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        ended_at DATETIME,
-        message_count INT DEFAULT 0,
-        tool_call_count INT DEFAULT 0,
-        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-      )
-    `);
+      // Settings Module
+      {
+        code: "settings.view",
+        name: "View Settings",
+        category: "Settings",
+        description: "Can view settings",
+      },
+      {
+        code: "settings.manage",
+        name: "Manage Settings",
+        category: "Settings",
+        description: "Can modify system settings",
+      },
 
-    // Create chat_messages table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS chat_messages (
-        id VARCHAR(36) PRIMARY KEY,
-        session_id VARCHAR(36) NOT NULL,
-        role ENUM('user', 'assistant', 'system') NOT NULL,
-        content TEXT NOT NULL,
-        thoughts TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
-      )
-    `);
+      // Agents Module
+      {
+        code: "agents.view",
+        name: "View Agents",
+        category: "Agents",
+        description: "Can view agents",
+      },
+      {
+        code: "agents.create",
+        name: "Create Agents",
+        category: "Agents",
+        description: "Can create new agents",
+      },
+      {
+        code: "agents.manage",
+        name: "Manage Agents",
+        category: "Agents",
+        description: "Can edit and delete agents",
+      },
 
-    // Create tool_calls table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS tool_calls (
-        id VARCHAR(36) PRIMARY KEY,
-        message_id VARCHAR(36) NOT NULL,
-        session_id VARCHAR(36) NOT NULL,
-        tool_name VARCHAR(255) NOT NULL,
-        tool_input TEXT,
-        tool_output TEXT,
-        execution_time_ms INT,
-        status ENUM('success', 'error', 'pending') DEFAULT 'pending',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
-        FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
-      )
-    `);
+    ];
 
-    // Create roles table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS roles (
-        id VARCHAR(36) PRIMARY KEY,
-        name VARCHAR(100) NOT NULL UNIQUE,
-        description VARCHAR(255),
-        is_system BOOLEAN DEFAULT false,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `);
+    for (const perm of permissions) {
+      await connection.execute(
+        `INSERT IGNORE INTO permissions (id, code, name, category, description) 
+         VALUES (UUID(), ?, ?, ?, ?)`,
+        [perm.code, perm.name, perm.category, perm.description]
+      );
+    }
 
-    // Create permissions table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS permissions (
-        id VARCHAR(36) PRIMARY KEY,
-        code VARCHAR(100) NOT NULL UNIQUE,
-        name VARCHAR(100) NOT NULL,
-        category VARCHAR(50),
-        description VARCHAR(255)
-      )
-    `);
+    // 2. Seed Roles
+    // Superadmin
+    await connection.execute(
+      `INSERT IGNORE INTO roles (id, name, description, is_system) 
+       VALUES ('11111111-1111-1111-1111-111111111111', 'Superadmin', 'Full system access', true)`
+    );
 
-    // Create role_permissions table (many-to-many)
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS role_permissions (
-        role_id VARCHAR(36) NOT NULL,
-        permission_id VARCHAR(36) NOT NULL,
-        PRIMARY KEY (role_id, permission_id),
-        FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
-        FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
-      )
-    `);
+    // User
+    await connection.execute(
+      `INSERT IGNORE INTO roles (id, name, description, is_system) 
+       VALUES ('22222222-2222-2222-2222-222222222222', 'User', 'Standard user access', true)`
+    );
 
-    // Create users table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS users (
-        id VARCHAR(36) PRIMARY KEY,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        password_hash VARCHAR(255) NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        role_id VARCHAR(36),
-        is_active BOOLEAN DEFAULT true,
-        last_login DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE SET NULL
-      )
-    `);
+    // 3. Assign All Permissions to Superadmin
+    const [allPerms] = await connection.execute("SELECT id FROM permissions");
+    const permRows = allPerms as { id: string }[];
 
-    // Create doc_analysis_sessions table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS doc_analysis_sessions (
-        id VARCHAR(36) PRIMARY KEY,
-        user_id VARCHAR(36) NOT NULL,
-        title VARCHAR(255),
-        prompt TEXT NOT NULL,
-        model VARCHAR(100) DEFAULT 'gemini-2.5-flash',
-        response LONGTEXT,
-        status ENUM('pending', 'processing', 'completed', 'error') DEFAULT 'pending',
-        error_message TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
+    for (const perm of permRows) {
+      await connection.execute(
+        `INSERT IGNORE INTO role_permissions (role_id, permission_id) 
+         VALUES ('11111111-1111-1111-1111-111111111111', ?)`,
+        [perm.id]
+      );
+    }
 
-    // Create doc_analysis_files table
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS doc_analysis_files (
-        id VARCHAR(36) PRIMARY KEY,
-        session_id VARCHAR(36) NOT NULL,
-        file_name VARCHAR(255) NOT NULL,
-        original_name VARCHAR(255) NOT NULL,
-        s3_key VARCHAR(512) NOT NULL,
-        file_size BIGINT,
-        mime_type VARCHAR(100),
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (session_id) REFERENCES doc_analysis_sessions(id) ON DELETE CASCADE
-      )
-    `);
+    // 4. Assign Default Permissions to User (View only)
+    const viewPerms = permissions.filter((p) => !p.code.includes(".manage"));
+    for (const p of viewPerms) {
+      // Get ID
+      const [rows] = await connection.execute(
+        "SELECT id FROM permissions WHERE code = ?",
+        [p.code]
+      );
+      const found = (rows as { id: string }[])[0];
+      if (found) {
+        await connection.execute(
+          `INSERT IGNORE INTO role_permissions (role_id, permission_id) 
+             VALUES ('22222222-2222-2222-2222-222222222222', ?)`,
+          [found.id]
+        );
+      }
+    }
 
-    console.log('Database tables initialized successfully');
+    // 5. Seed Default App Settings
+    const defaultSettings = [
+      // General Settings
+      {
+        category: "general",
+        key: "app_name",
+        value: "AgentForge AI",
+        type: "text",
+        description: "Application display name",
+      },
+      {
+        category: "general",
+        key: "language",
+        value: "id",
+        type: "select",
+        description: "Default language (id/en)",
+      },
+      {
+        category: "general",
+        key: "theme",
+        value: "system",
+        type: "select",
+        description: "Theme preference (light/dark/system)",
+      },
+
+      // Agent Settings
+      {
+        category: "agent",
+        key: "default_model",
+        value: "gemini-2.5-flash",
+        type: "select",
+        description: "Default LLM model for new agents",
+      },
+      {
+        category: "agent",
+        key: "default_temperature",
+        value: "0.7",
+        type: "number",
+        description: "Default temperature (0-1)",
+      },
+      {
+        category: "agent",
+        key: "default_max_tokens",
+        value: "2048",
+        type: "number",
+        description: "Default max tokens",
+      },
+      {
+        category: "agent",
+        key: "default_system_prompt",
+        value: "You are a helpful AI assistant.",
+        type: "text",
+        description: "Default system prompt template",
+      },
+
+    ];
+
+    for (const setting of defaultSettings) {
+      await connection.execute(
+        `INSERT IGNORE INTO app_settings (id, category, setting_key, setting_value, value_type, description) 
+         VALUES (UUID(), ?, ?, ?, ?, ?)`,
+        [
+          setting.category,
+          setting.key,
+          setting.value,
+          setting.type,
+          setting.description,
+        ]
+      );
+    }
+
+    console.log("Database tables and seed data initialized successfully");
   } finally {
     connection.release();
   }

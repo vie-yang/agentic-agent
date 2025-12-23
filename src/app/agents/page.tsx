@@ -1,9 +1,12 @@
 import { Bot, Activity, Server, Key, Plus, MessageSquare } from 'lucide-react';
 import Link from 'next/link';
+import { getServerSession } from 'next-auth';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { query } from '@/lib/db';
+import { authOptions } from '@/lib/auth';
+import { ExtendedSession, hasPermission } from '@/lib/auth-utils';
 
 interface Agent {
     id: string;
@@ -21,19 +24,19 @@ interface StatsResult {
 async function getStats() {
     try {
         const totalAgentsResult = await query<StatsResult[]>('SELECT COUNT(*) as count FROM agents');
-        const totalAgents = totalAgentsResult[0]?.count || 0;
+        const totalAgents = Number(totalAgentsResult[0]?.count) || 0;
 
         const activeAgentsResult = await query<StatsResult[]>("SELECT COUNT(*) as count FROM agents WHERE status = 'active'");
-        const activeAgents = activeAgentsResult[0]?.count || 0;
+        const activeAgents = Number(activeAgentsResult[0]?.count) || 0;
 
         const mcpResult = await query<StatsResult[]>('SELECT COUNT(*) as count FROM mcp_configs');
-        const mcpConnections = mcpResult[0]?.count || 0;
+        const mcpConnections = Number(mcpResult[0]?.count) || 0;
 
         const apiKeysResult = await query<StatsResult[]>('SELECT COUNT(*) as count FROM api_keys');
-        const apiKeys = apiKeysResult[0]?.count || 0;
+        const apiKeys = Number(apiKeysResult[0]?.count) || 0;
 
         const sessionsResult = await query<StatsResult[]>('SELECT COUNT(*) as count FROM chat_sessions');
-        const totalSessions = sessionsResult[0]?.count || 0;
+        const totalSessions = Number(sessionsResult[0]?.count) || 0;
 
         return { totalAgents, activeAgents, mcpConnections, apiKeys, totalSessions };
     } catch (error) {
@@ -55,6 +58,18 @@ async function getRecentAgents(): Promise<Agent[]> {
 }
 
 export default async function AgentsOverviewPage() {
+    const session = await getServerSession(authOptions) as ExtendedSession | null;
+
+    if (!hasPermission(session, 'agents.view')) {
+        return (
+            <div className="flex items-center justify-center h-64">
+                <p className="text-muted-foreground">You don&apos;t have permission to view this page.</p>
+            </div>
+        );
+    }
+
+    const canCreate = hasPermission(session, 'agents.create');
+
     const stats = await getStats();
     const recentAgents = await getRecentAgents();
 
@@ -79,12 +94,14 @@ export default async function AgentsOverviewPage() {
                     <h1 className="text-3xl font-bold tracking-tight">Agents Overview</h1>
                     <p className="text-muted-foreground">Welcome back! Here&apos;s an overview of your AI agents.</p>
                 </div>
-                <Link href="/agents/new">
-                    <Button>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Create Agent
-                    </Button>
-                </Link>
+                {canCreate && (
+                    <Link href="/agents/new">
+                        <Button>
+                            <Plus className="mr-2 h-4 w-4" />
+                            Create Agent
+                        </Button>
+                    </Link>
+                )}
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
@@ -165,12 +182,14 @@ export default async function AgentsOverviewPage() {
                                 Create your first AI agent to get started. Agents can be configured with custom prompts,
                                 LLM settings, and integrated with MCP servers.
                             </p>
-                            <Link href="/agents/new">
-                                <Button>
-                                    <Plus className="mr-2 h-4 w-4" />
-                                    Create Your First Agent
-                                </Button>
-                            </Link>
+                            {canCreate && (
+                                <Link href="/agents/new">
+                                    <Button>
+                                        <Plus className="mr-2 h-4 w-4" />
+                                        Create Your First Agent
+                                    </Button>
+                                </Link>
+                            )}
                         </div>
                     ) : (
                         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

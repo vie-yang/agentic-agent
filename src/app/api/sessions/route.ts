@@ -33,7 +33,6 @@ export async function GET(request: NextRequest) {
         }
 
         // Get sessions with agent name
-        // Note: LIMIT and OFFSET are interpolated directly as they're sanitized integers
         const sessions = await query<ChatSession[]>(
             `SELECT cs.*, a.name as agent_name 
        FROM chat_sessions cs 
@@ -68,4 +67,3 @@ export async function GET(request: NextRequest) {
         );
     }
 }
-

@@ -169,7 +169,7 @@ export default function AgentListPage() {
                                         </div>
                                         <CardTitle className="text-base">{agent.name}</CardTitle>
                                     </div>
-                                    <Badge variant={getStatusVariant(agent.status) as "default" | "secondary" | "destructive" | "outline" | "accent" | "success"}>
+                                    <Badge variant={getStatusVariant(agent.status) as "default" | "secondary" | "destructive" | "outline" | "success"}>
                                         {agent.status}
                                     </Badge>
                                 </div>

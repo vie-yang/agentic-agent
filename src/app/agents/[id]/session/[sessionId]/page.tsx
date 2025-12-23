@@ -85,9 +85,9 @@ function parseThoughtsWithToolCalls(thoughts: string | null, toolCalls: ToolCall
 export default function SessionDetailPage({
     params,
 }: {
-    params: Promise<{ sessionId: string }>;
+    params: Promise<{ id: string; sessionId: string }>;
 }) {
-    const { sessionId } = use(params);
+    const { id, sessionId } = use(params);
     const [session, setSession] = useState<ChatSession | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
@@ -162,7 +162,7 @@ export default function SessionDetailPage({
                 <MessageSquare className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                 <h2 className="text-xl font-semibold mb-2">Session Not Found</h2>
                 <p className="text-muted-foreground mb-4">The session you&apos;re looking for doesn&apos;t exist.</p>
-                <Link href="/agents/history">
+                <Link href={`/agents/${id}?tab=history`}>
                     <Button>
                         <ArrowLeft className="h-4 w-4 mr-2" />
                         Back to History
@@ -175,7 +175,7 @@ export default function SessionDetailPage({
     return (
         <div className="space-y-6">
             <div className="flex items-center gap-4">
-                <Link href="/agents/history">
+                <Link href={`/agents/${id}?tab=history`}>
                     <Button variant="ghost" size="icon">
                         <ArrowLeft className="h-4 w-4" />
                     </Button>

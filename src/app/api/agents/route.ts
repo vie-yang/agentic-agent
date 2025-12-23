@@ -8,6 +8,8 @@ interface Agent {
     description: string | null;
     system_prompt: string | null;
     status: 'active' | 'inactive' | 'draft';
+    embed_token: string | null;
+    allowed_domains: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -43,12 +45,13 @@ export async function POST(request: NextRequest) {
 
         const id = uuidv4();
         const llmConfigId = uuidv4();
+        const embedToken = uuidv4().replace(/-/g, '');
 
         // Create agent
         await query(
-            `INSERT INTO agents (id, name, description, system_prompt, status)
-       VALUES (?, ?, ?, ?, ?)`,
-            [id, name, description || null, system_prompt || null, status]
+            `INSERT INTO agents (id, name, description, system_prompt, status, embed_token)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+            [id, name, description || null, system_prompt || null, status, embedToken]
         );
 
         // Create default LLM config

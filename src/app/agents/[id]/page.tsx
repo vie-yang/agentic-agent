@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, use } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import LLMConfigForm from '@/components/forms/LLMConfigForm';
 import APIKeyForm from '@/components/forms/APIKeyForm';
@@ -22,14 +22,16 @@ import {
     Check,
     Loader2,
     Eye,
-    EyeOff
+    EyeOff,
+    Clock
 } from 'lucide-react';
+import SessionHistoryList from '@/components/agents/SessionHistoryList';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
 
 interface Agent {
     id: string;
@@ -37,6 +39,8 @@ interface Agent {
     description: string | null;
     system_prompt: string | null;
     status: 'active' | 'inactive' | 'draft';
+    embed_token: string | null;
+    allowed_domains: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -84,9 +88,23 @@ interface FileSearchDocument {
     uploaded_at: string;
 }
 
+type TabType = 'general' | 'llm' | 'apikeys' | 'mcp' | 'rag' | 'embed' | 'history';
+
+interface NavItem {
+    id: TabType;
+    label: string;
+    icon: React.ReactNode;
+    description: string;
+}
+
 export default function AgentDetailPage({ params }: { params: Promise<{ id: string }> }) {
     const { id } = use(params);
     const router = useRouter();
+    const searchParams = useSearchParams();
+    
+    // Initialize active tab from URL or default to 'general'
+    const [activeTab, setActiveTab] = useState<TabType>((searchParams.get('tab') as TabType) || 'general');
+    
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [agent, setAgent] = useState<Agent | null>(null);
@@ -98,6 +116,23 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
     const [copied, setCopied] = useState(false);
     const [showPreview, setShowPreview] = useState(false);
 
+    const navItems: NavItem[] = [
+        { id: 'general', label: 'General', icon: <Settings className="h-5 w-5" />, description: 'Basic configuration' },
+        { id: 'llm', label: 'LLM', icon: <Bot className="h-5 w-5" />, description: 'Model settings' },
+        { id: 'apikeys', label: 'API Keys', icon: <Key className="h-5 w-5" />, description: 'Provider credentials' },
+        { id: 'mcp', label: 'MCP', icon: <Server className="h-5 w-5" />, description: 'Context protocol' },
+        { id: 'rag', label: 'RAG', icon: <Database className="h-5 w-5" />, description: 'Knowledge base' },
+        { id: 'embed', label: 'Embed', icon: <Code className="h-5 w-5" />, description: 'Integration code' },
+        { id: 'history', label: 'History', icon: <Clock className="h-5 w-5" />, description: 'Chat sessions' },
+    ];
+
+    const handleTabChange = (tab: TabType) => {
+        setActiveTab(tab);
+        // Update URL without refreshing
+        const url = new URL(window.location.href);
+        url.searchParams.set('tab', tab);
+        window.history.pushState({}, '', url);
+    };
 
     const fetchAgent = async () => {
         try {
@@ -190,6 +225,8 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
                     description: agent.description,
                     system_prompt: agent.system_prompt,
                     status: agent.status,
+                    embed_token: agent.embed_token,
+                    allowed_domains: agent.allowed_domains,
                 }),
             });
 
@@ -290,10 +327,28 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
     var script = document.createElement('script');
     script.src = '${baseUrl}/widget.js';
     script.setAttribute('data-agent-id', '${id}');
+    script.setAttribute('data-embed-token', '${agent?.embed_token}');
     script.setAttribute('data-api-url', '${baseUrl}/api/chat');
     document.body.appendChild(script);
   })();
 </script>`;
+    };
+
+    const getIframeEmbedCode = () => {
+        const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+        return `<iframe 
+  src="${baseUrl}/agents/embed/${agent?.embed_token}" 
+  width="100%" 
+  height="700px" 
+  frameborder="0"
+  style="border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);"
+></iframe>`;
+    };
+
+    const handleCopyIframeCode = () => {
+        navigator.clipboard.writeText(getIframeEmbedCode());
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
     };
 
     const handleCopyCode = () => {
@@ -323,63 +378,10 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
         return null;
     }
 
-    return (
-        <div className="space-y-6">
-            {/* Page Header */}
-            <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                    <Link href="/agents">
-                        <Button variant="ghost" size="icon">
-                            <ArrowLeft className="h-5 w-5" />
-                        </Button>
-                    </Link>
-                    <div>
-                        <h1 className="text-3xl font-bold tracking-tight">{agent.name}</h1>
-                        <p className="text-muted-foreground">Configure your AI agent</p>
-                    </div>
-                </div>
-                <div className="flex items-center gap-2">
-                    <Badge variant={getStatusVariant(agent.status) as "default" | "secondary" | "destructive" | "outline" | "accent" | "success"}>
-                        {agent.status}
-                    </Badge>
-                    <Button variant="destructive" size="sm" onClick={handleDeleteAgent}>
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                    </Button>
-                </div>
-            </div>
-
-            {/* Tabs */}
-            <Tabs defaultValue="general" className="space-y-6">
-                <TabsList className="grid w-full grid-cols-6">
-                    <TabsTrigger value="general" className="gap-2">
-                        <Settings className="h-4 w-4" />
-                        General
-                    </TabsTrigger>
-                    <TabsTrigger value="llm" className="gap-2">
-                        <Bot className="h-4 w-4" />
-                        LLM
-                    </TabsTrigger>
-                    <TabsTrigger value="apikeys" className="gap-2">
-                        <Key className="h-4 w-4" />
-                        API Keys
-                    </TabsTrigger>
-                    <TabsTrigger value="mcp" className="gap-2">
-                        <Server className="h-4 w-4" />
-                        MCP
-                    </TabsTrigger>
-                    <TabsTrigger value="rag" className="gap-2">
-                        <Database className="h-4 w-4" />
-                        RAG
-                    </TabsTrigger>
-                    <TabsTrigger value="embed" className="gap-2">
-                        <Code className="h-4 w-4" />
-                        Embed
-                    </TabsTrigger>
-                </TabsList>
-
-                {/* General Tab */}
-                <TabsContent value="general">
+    const renderContent = () => {
+        switch (activeTab) {
+            case 'general':
+                return (
                     <Card>
                         <CardHeader>
                             <CardTitle>General Settings</CardTitle>
@@ -422,23 +424,51 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
                                     </p>
                                 </div>
 
-                                <div className="space-y-2">
-                                    <Label htmlFor="status">Status</Label>
-                                    <select
-                                        id="status"
-                                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                        value={agent.status}
-                                        onChange={(e) =>
-                                            setAgent({ ...agent, status: e.target.value as Agent['status'] })
-                                        }
-                                    >
-                                        <option value="draft">Draft</option>
-                                        <option value="active">Active</option>
-                                        <option value="inactive">Inactive</option>
-                                    </select>
+                                <div className="space-y-4 pt-4 border-t">
+                                    <h3 className="text-sm font-semibold">Security Settings</h3>
+                                    
+                                    <div className="space-y-2">
+                                        <Label htmlFor="embed_token">Embed Token</Label>
+                                        <div className="flex gap-2">
+                                            <Input
+                                                id="embed_token"
+                                                value={agent.embed_token || ''}
+                                                readOnly
+                                                className="bg-muted"
+                                            />
+                                            <Button 
+                                                variant="outline" 
+                                                type="button"
+                                                onClick={() => {
+                                                    const newToken = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+                                                        .map(b => b.toString(16).padStart(2, '0'))
+                                                        .join('');
+                                                    setAgent({ ...agent, embed_token: newToken });
+                                                }}
+                                            >
+                                                Regenerate
+                                            </Button>
+                                        </div>
+                                        <p className="text-xs text-muted-foreground">
+                                            Unique token used to authorize chat requests from external sites.
+                                        </p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="allowed_domains">Allowed Domains</Label>
+                                        <Input
+                                            id="allowed_domains"
+                                            value={agent.allowed_domains || ''}
+                                            onChange={(e) => setAgent({ ...agent, allowed_domains: e.target.value })}
+                                            placeholder="example.com, myapp.net"
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            Comma-separated list of domains allowed to embed this agent. Leave empty to allow all (not recommended).
+                                        </p>
+                                    </div>
                                 </div>
 
-                                <Button type="submit" disabled={saving}>
+                                <Button type="submit" disabled={saving} className="w-full sm:w-auto">
                                     {saving ? (
                                         <>
                                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -454,10 +484,9 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
                             </form>
                         </CardContent>
                     </Card>
-                </TabsContent>
-
-                {/* LLM Tab */}
-                <TabsContent value="llm">
+                );
+            case 'llm':
+                return (
                     <Card>
                         <CardHeader>
                             <CardTitle>LLM Configuration</CardTitle>
@@ -472,10 +501,9 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
                             )}
                         </CardContent>
                     </Card>
-                </TabsContent>
-
-                {/* API Keys Tab */}
-                <TabsContent value="apikeys">
+                );
+            case 'apikeys':
+                return (
                     <Card>
                         <CardHeader>
                             <CardTitle>API Keys</CardTitle>
@@ -489,10 +517,9 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
                             />
                         </CardContent>
                     </Card>
-                </TabsContent>
-
-                {/* MCP Tab */}
-                <TabsContent value="mcp">
+                );
+            case 'mcp':
+                return (
                     <Card>
                         <CardHeader>
                             <CardTitle>MCP Configuration</CardTitle>
@@ -507,190 +534,215 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
                             />
                         </CardContent>
                     </Card>
-                </TabsContent>
-
-                {/* RAG Tab */}
-                <TabsContent value="rag">
+                );
+            case 'rag':
+                return (
                     <FileSearchForm
                         agentId={id}
                         store={fileSearchStore}
                         documents={fileSearchDocuments}
                         onRefresh={fetchFileSearch}
                     />
-                </TabsContent>
-
-                {/* Embed Tab */}
-                <TabsContent value="embed">
-                    <Card>
-                        <CardHeader>
-                            <CardTitle>Embed Code</CardTitle>
-                            <CardDescription>Add this code to your website to embed the chat widget</CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-6">
-                            <div className="relative rounded-lg bg-slate-900 p-4">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs text-slate-400">HTML</span>
-                                    <Button variant="ghost" size="sm" onClick={handleCopyCode} className="text-slate-400 hover:text-white">
-                                        {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                                    </Button>
+                );
+            case 'embed':
+                return (
+                    <div className="space-y-6">
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Embed Code</CardTitle>
+                                <CardDescription>Add this code to your website to embed the chat widget</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-6">
+                                <div className="space-y-4">
+                                    <h4 className="text-sm font-semibold flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                                        Floating Chat Widget
+                                    </h4>
+                                    <div className="relative rounded-lg bg-slate-900 p-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-xs text-slate-400">HTML Snippet</span>
+                                            <Button variant="ghost" size="sm" onClick={handleCopyCode} className="text-slate-400 hover:text-white">
+                                                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                                            </Button>
+                                        </div>
+                                        <pre className="text-sm text-green-400 overflow-x-auto whitespace-pre-wrap">{getEmbedCode()}</pre>
+                                    </div>
                                 </div>
-                                <pre className="text-sm text-green-400 overflow-x-auto whitespace-pre-wrap">{getEmbedCode()}</pre>
-                            </div>
 
-                            <Button variant="outline" onClick={() => setShowPreview(!showPreview)}>
-                                {showPreview ? (
-                                    <>
-                                        <EyeOff className="mr-2 h-4 w-4" />
-                                        Hide Preview
-                                    </>
-                                ) : (
-                                    <>
-                                        <Eye className="mr-2 h-4 w-4" />
-                                        Show Preview
-                                    </>
+                                <div className="space-y-4 pt-6 border-t">
+                                    <h4 className="text-sm font-semibold flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                                        Full Page / Iframe Embed
+                                    </h4>
+                                    <div className="relative rounded-lg bg-slate-900 p-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-xs text-slate-400">Iframe Snippet</span>
+                                            <Button variant="ghost" size="sm" onClick={handleCopyIframeCode} className="text-slate-400 hover:text-white">
+                                                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                                            </Button>
+                                        </div>
+                                        <pre className="text-sm text-green-400 overflow-x-auto whitespace-pre-wrap">{getIframeEmbedCode()}</pre>
+                                    </div>
+                                </div>
+
+                                <Button variant="outline" onClick={() => setShowPreview(!showPreview)}>
+                                    {showPreview ? (
+                                        <>
+                                            <EyeOff className="mr-2 h-4 w-4" />
+                                            Hide Preview
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Eye className="mr-2 h-4 w-4" />
+                                            Show Preview
+                                        </>
+                                    )}
+                                </Button>
+
+                                {showPreview && (
+                                    <div className="relative h-[400px] rounded-lg border bg-slate-100 overflow-hidden">
+                                        <div className="absolute inset-0 flex items-center justify-center">
+                                            <p className="text-muted-foreground">Your website content here</p>
+                                        </div>
+                                        <ChatWidget
+                                            agentId={id}
+                                            agentName={agent.name}
+                                        />
+                                    </div>
                                 )}
-                            </Button>
+                            </CardContent>
+                        </Card>
 
-                            {showPreview && (
-                                <div className="relative h-[400px] rounded-lg border bg-slate-100 overflow-hidden">
-                                    <div className="absolute inset-0 flex items-center justify-center">
-                                        <p className="text-muted-foreground">Your website content here</p>
-                                    </div>
-                                    <ChatWidget
-                                        agentId={id}
-                                        agentName={agent.name}
-                                    />
-                                </div>
-                            )}
-                        </CardContent>
-                    </Card>
-
-                    {/* Customization Documentation */}
-                    <Card className="mt-6">
-                        <CardHeader>
-                            <CardTitle>Widget Customization</CardTitle>
-                            <CardDescription>Customize the widget appearance using data attributes</CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-6">
-                            {/* Colors */}
-                            <div>
-                                <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
-                                    <span className="w-3 h-3 rounded-full bg-primary"></span>
-                                    Colors
-                                </h4>
-                                <div className="grid gap-2 text-sm">
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
-                                        <code className="text-primary">data-primary-color</code>
-                                        <span className="text-muted-foreground">Main color for header and buttons (e.g., &quot;#10b981&quot;)</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
-                                        <code className="text-primary">data-secondary-color</code>
-                                        <span className="text-muted-foreground">Secondary accent color</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
-                                        <code className="text-primary">data-text-color</code>
-                                        <span className="text-muted-foreground">Header text color (default: &quot;#ffffff&quot;)</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
-                                        <code className="text-primary">data-bg-color</code>
-                                        <span className="text-muted-foreground">Chat window background</span>
+                        {/* Customization Documentation */}
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Widget Customization</CardTitle>
+                                <CardDescription>Customize the widget appearance using data attributes</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-6">
+                                {/* Colors */}
+                                <div>
+                                    <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                                        <span className="w-3 h-3 rounded-full bg-primary"></span>
+                                        Colors
+                                    </h4>
+                                    <div className="grid gap-2 text-sm">
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-primary-color</code>
+                                            <span className="text-muted-foreground">Main color for header and buttons (e.g., &quot;#10b981&quot;)</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
+                                            <code className="text-primary">data-secondary-color</code>
+                                            <span className="text-muted-foreground">Secondary accent color</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-text-color</code>
+                                            <span className="text-muted-foreground">Header text color (default: &quot;#ffffff&quot;)</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
+                                            <code className="text-primary">data-bg-color</code>
+                                            <span className="text-muted-foreground">Chat window background</span>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
 
-                            {/* Branding */}
-                            <div>
-                                <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
-                                    <span className="w-3 h-3 rounded-full bg-orange-500"></span>
-                                    Branding
-                                </h4>
-                                <div className="grid gap-2 text-sm">
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
-                                        <code className="text-primary">data-title</code>
-                                        <span className="text-muted-foreground">Widget header title (default: &quot;AI Assistant&quot;)</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
-                                        <code className="text-primary">data-subtitle</code>
-                                        <span className="text-muted-foreground">Subtitle/status text (default: &quot;Online&quot;)</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
-                                        <code className="text-primary">data-logo-url</code>
-                                        <span className="text-muted-foreground">URL for custom logo in header</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
-                                        <code className="text-primary">data-avatar-url</code>
-                                        <span className="text-muted-foreground">URL for bot avatar image</span>
+                                {/* Branding */}
+                                <div>
+                                    <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                                        <span className="w-3 h-3 rounded-full bg-orange-500"></span>
+                                        Branding
+                                    </h4>
+                                    <div className="grid gap-2 text-sm">
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-title</code>
+                                            <span className="text-muted-foreground">Widget header title (default: &quot;AI Assistant&quot;)</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
+                                            <code className="text-primary">data-subtitle</code>
+                                            <span className="text-muted-foreground">Subtitle/status text (default: &quot;Online&quot;)</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-logo-url</code>
+                                            <span className="text-muted-foreground">URL for custom logo in header</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
+                                            <code className="text-primary">data-avatar-url</code>
+                                            <span className="text-muted-foreground">URL for bot avatar image</span>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
 
-                            {/* Layout */}
-                            <div>
-                                <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
-                                    <span className="w-3 h-3 rounded-full bg-purple-500"></span>
-                                    Layout
-                                </h4>
-                                <div className="grid gap-2 text-sm">
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
-                                        <code className="text-primary">data-position</code>
-                                        <span className="text-muted-foreground">&quot;bottom-right&quot; or &quot;bottom-left&quot;</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
-                                        <code className="text-primary">data-width</code>
-                                        <span className="text-muted-foreground">Widget width (e.g., &quot;400px&quot;)</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
-                                        <code className="text-primary">data-height</code>
-                                        <span className="text-muted-foreground">Widget height (e.g., &quot;600px&quot;)</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
-                                        <code className="text-primary">data-border-radius</code>
-                                        <span className="text-muted-foreground">Corner radius (e.g., &quot;16px&quot;)</span>
+                                {/* Layout */}
+                                <div>
+                                    <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                                        <span className="w-3 h-3 rounded-full bg-purple-500"></span>
+                                        Layout
+                                    </h4>
+                                    <div className="grid gap-2 text-sm">
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-position</code>
+                                            <span className="text-muted-foreground">&quot;bottom-right&quot; or &quot;bottom-left&quot;</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
+                                            <code className="text-primary">data-width</code>
+                                            <span className="text-muted-foreground">Widget width (e.g., &quot;400px&quot;)</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-height</code>
+                                            <span className="text-muted-foreground">Widget height (e.g., &quot;600px&quot;)</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
+                                            <code className="text-primary">data-border-radius</code>
+                                            <span className="text-muted-foreground">Corner radius (e.g., &quot;16px&quot;)</span>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
 
-                            {/* Behavior */}
-                            <div>
-                                <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
-                                    <span className="w-3 h-3 rounded-full bg-cyan-500"></span>
-                                    Behavior
-                                </h4>
-                                <div className="grid gap-2 text-sm">
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
-                                        <code className="text-primary">data-welcome-message</code>
-                                        <span className="text-muted-foreground">Custom welcome message</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
-                                        <code className="text-primary">data-placeholder</code>
-                                        <span className="text-muted-foreground">Input placeholder text</span>
+                                {/* Behavior */}
+                                <div>
+                                    <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                                        <span className="w-3 h-3 rounded-full bg-cyan-500"></span>
+                                        Behavior
+                                    </h4>
+                                    <div className="grid gap-2 text-sm">
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-welcome-message</code>
+                                            <span className="text-muted-foreground">Custom welcome message</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
+                                            <code className="text-primary">data-placeholder</code>
+                                            <span className="text-muted-foreground">Input placeholder text</span>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
 
-                            {/* Client Info */}
-                            <div>
-                                <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
-                                    <span className="w-3 h-3 rounded-full bg-emerald-500"></span>
-                                    Client Info (for tracking)
-                                </h4>
-                                <div className="grid gap-2 text-sm">
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
-                                        <code className="text-primary">data-client-name</code>
-                                        <span className="text-muted-foreground">Client/user name (shown in history)</span>
-                                    </div>
-                                    <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
-                                        <code className="text-primary">data-client-level</code>
-                                        <span className="text-muted-foreground">Client level (e.g., &quot;superadmin&quot;, &quot;manager&quot;, &quot;staff&quot;)</span>
+                                {/* Client Info */}
+                                <div>
+                                    <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                                        <span className="w-3 h-3 rounded-full bg-emerald-500"></span>
+                                        Client Info (for tracking)
+                                    </h4>
+                                    <div className="grid gap-2 text-sm">
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-client-name</code>
+                                            <span className="text-muted-foreground">Client/user name (shown in history)</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded">
+                                            <code className="text-primary">data-client-level</code>
+                                            <span className="text-muted-foreground">Client level (e.g., &quot;superadmin&quot;, &quot;manager&quot;, &quot;staff&quot;)</span>
+                                        </div>
+                                        <div className="grid grid-cols-[180px_1fr] gap-4 p-2 rounded bg-muted/50">
+                                            <code className="text-primary">data-client-id</code>
+                                            <span className="text-muted-foreground">Unique identifier for the client/user</span>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
 
-                            {/* Example */}
-                            <div className="pt-4 border-t">
-                                <h4 className="font-semibold text-sm mb-3">Example with Customization</h4>
-                                <div className="rounded-lg bg-slate-900 p-4">
-                                    <pre className="text-xs text-green-400 overflow-x-auto whitespace-pre-wrap">{`<!-- AI Chat Widget with Customization -->
+                                {/* Example */}
+                                <div className="pt-4 border-t">
+                                    <h4 className="font-semibold text-sm mb-3">Example with Customization</h4>
+                                    <div className="rounded-lg bg-slate-900 p-4">
+                                        <pre className="text-xs text-green-400 overflow-x-auto whitespace-pre-wrap">{`<!-- AI Chat Widget with Customization -->
 <script>
   (function() {
     var script = document.createElement('script');
@@ -704,17 +756,148 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
     script.setAttribute('data-welcome-message', 'Hello! How can we assist you today?');
     script.setAttribute('data-placeholder', 'Ask me anything...');
     // Client Info (for tracking in history)
+    script.setAttribute('data-client-id', 'user-12345');
     script.setAttribute('data-client-name', 'John Doe');
     script.setAttribute('data-client-level', 'manager');
     document.body.appendChild(script);
   })();
 </script>`}</pre>
+                                    </div>
                                 </div>
-                            </div>
+                            </CardContent>
+                        </Card>
+
+                        {/* Iframe Customization Documentation */}
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Iframe Customization</CardTitle>
+                                <CardDescription>Customize the iframe embed using URL parameters (query strings)</CardDescription>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                                <p className="text-sm text-muted-foreground">
+                                    You can pass customization parameters directly in the <code>src</code> URL of the iframe.
+                                </p>
+                                
+                                <div className="rounded-lg bg-slate-900 p-4">
+                                    <pre className="text-xs text-green-400 overflow-x-auto whitespace-pre-wrap">{`<iframe
+  src="${typeof window !== 'undefined' ? window.location.origin : ''}/agents/embed/${agent.embed_token}?title=Help+Center&primary-color=%23FF0000&client-id=USER123"
+  width="100%"
+  height="600"
+  frameborder="0"
+></iframe>`}</pre>
+                                </div>
+
+                                <div className="grid gap-2 text-sm mt-4">
+                                    <h4 className="font-semibold text-sm mb-2">Supported Parameters</h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <h5 className="font-medium mb-2 text-xs uppercase text-muted-foreground">Visuals</h5>
+                                            <ul className="space-y-2">
+                                                <li className="flex gap-2"><code className="text-primary text-xs">title</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">subtitle</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">primary-color</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">secondary-color</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">text-color</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">bg-color</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">logo-url</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">avatar-url</code></li>
+                                            </ul>
+                                        </div>
+                                        <div>
+                                            <h5 className="font-medium mb-2 text-xs uppercase text-muted-foreground">Content & Client</h5>
+                                            <ul className="space-y-2">
+                                                <li className="flex gap-2"><code className="text-primary text-xs">welcome-message</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">placeholder</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">client-id</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">client-name</code></li>
+                                                <li className="flex gap-2"><code className="text-primary text-xs">client-level</code></li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    </div>
+                );
+            case 'history':
+                return <SessionHistoryList agentId={id} showHeader={false} />;
+            default:
+                return null;
+        }
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Page Header */}
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                    <Link href="/agents">
+                        <Button variant="ghost" size="icon">
+                            <ArrowLeft className="h-5 w-5" />
+                        </Button>
+                    </Link>
+                    <div>
+                        <h1 className="text-3xl font-bold tracking-tight">{agent.name}</h1>
+                        <p className="text-muted-foreground">Configure your AI agent</p>
+                    </div>
+                </div>
+                <div className="flex items-center gap-2">
+                    <Badge variant={getStatusVariant(agent.status) as "default" | "secondary" | "destructive" | "outline" | "success"}>
+                        {agent.status}
+                    </Badge>
+                    <Button variant="destructive" size="sm" onClick={handleDeleteAgent}>
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                    </Button>
+                </div>
+            </div>
+
+            <div className="flex flex-col lg:flex-row gap-6">
+                {/* Sidebar Navigation - Vertical Tabs */}
+                <div className="lg:w-64 flex-shrink-0">
+                    <Card className="sticky top-6">
+                        <CardContent className="p-2">
+                            <nav className="space-y-1">
+                                {navItems.map((item) => (
+                                    <button
+                                        key={item.id}
+                                        onClick={() => handleTabChange(item.id)}
+                                        className={cn(
+                                            "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-all duration-200",
+                                            activeTab === item.id
+                                                ? "bg-primary-50 text-primary-700 border-l-4 border-primary-600"
+                                                : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 border-l-4 border-transparent"
+                                        )}
+                                    >
+                                        <span className={cn(
+                                            "flex-shrink-0",
+                                            activeTab === item.id ? "text-primary-600" : "text-slate-400"
+                                        )}>
+                                            {item.icon}
+                                        </span>
+                                        <div className="min-w-0">
+                                            <div className={cn(
+                                                "font-medium truncate",
+                                                activeTab === item.id ? "text-primary-700" : "text-slate-700"
+                                            )}>
+                                                {item.label}
+                                            </div>
+                                            <div className="text-xs text-slate-500 truncate">
+                                                {item.description}
+                                            </div>
+                                        </div>
+                                    </button>
+                                ))}
+                            </nav>
                         </CardContent>
                     </Card>
-                </TabsContent>
-            </Tabs>
+                </div>
+
+                {/* Main Content Area */}
+                <div className="flex-1 min-w-0">
+                    {renderContent()}
+                </div>
+            </div>
         </div>
     );
 }

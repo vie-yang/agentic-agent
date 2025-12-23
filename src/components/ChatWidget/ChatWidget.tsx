@@ -1,16 +1,23 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { MessageCircle, X, Send, Bot, User, Maximize2, Minimize2, Loader2, Wrench, Brain } from 'lucide-react';
+
+import { MessageCircle, X, Send, Bot, User, Maximize2, Minimize2, Loader2, Wrench, Brain, RotateCcw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import styles from './ChatWidget.module.css';
+import ChartRenderer from './ChartRenderer';
 
 interface Message {
     id: string;
     role: 'user' | 'assistant';
     content: string;
     timestamp: Date;
+    toolCalls?: Array<{
+        name: string;
+        input: any;
+        output: any;
+    }>;
 }
 
 interface ThinkingStatus {
@@ -25,14 +32,47 @@ interface ChatWidgetProps {
     agentId: string;
     agentName?: string;
     apiUrl?: string;
+    isEmbed?: boolean;
+    token?: string;
+    // Visual Customization
+    primaryColor?: string;
+    secondaryColor?: string;
+    textColor?: string;
+    bgColor?: string;
+    title?: string;
+    subtitle?: string;
+    logoUrl?: string;
+    avatarUrl?: string;
+    // Text Customization
+    welcomeMessage?: string;
+    placeholder?: string;
+    // Client Info (for tracking)
+    clientId?: string;
+    clientName?: string;
+    clientLevel?: string;
 }
 
 export default function ChatWidget({
     agentId,
     agentName = 'AI Assistant',
-    apiUrl = '/api/chat'
+    apiUrl = '/api/chat',
+    isEmbed = false,
+    token,
+    primaryColor,
+    secondaryColor,
+    textColor,
+    bgColor,
+    title,
+    subtitle,
+    logoUrl,
+    avatarUrl,
+    welcomeMessage,
+    placeholder,
+    clientId,
+    clientName,
+    clientLevel
 }: ChatWidgetProps) {
-    const [isOpen, setIsOpen] = useState(false);
+    const [isOpen, setIsOpen] = useState(isEmbed);
     const [isMaximized, setIsMaximized] = useState(false);
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
@@ -42,6 +82,8 @@ export default function ChatWidget({
         currentStep: '',
         iteration: 0,
     });
+    const [sessionId, setSessionId] = useState<string | null>(null);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
@@ -58,6 +100,60 @@ export default function ChatWidget({
             inputRef.current.focus();
         }
     }, [isOpen]);
+
+    // Load session and history on mount
+    useEffect(() => {
+        const loadSession = async () => {
+             // Only use localStorage if running in browser
+            if (typeof window === 'undefined') return;
+
+            // In embed mode, if clientId is provided, we can scope session by clientId + agentId
+            // Otherwise fall back to simple local storage key
+            const storageKey = clientId 
+                ? `chat_session_${agentId}_${clientId}`
+                : `chat_session_${agentId}`;
+
+            let currentSessionId = localStorage.getItem(storageKey);
+            
+            if (currentSessionId) {
+                setSessionId(currentSessionId);
+                try {
+                    const headers: HeadersInit = {};
+                    if (token) {
+                        headers['X-Embed-Token'] = token;
+                    }
+
+                    const res = await fetch(`/api/sessions/${currentSessionId}`, {
+                        headers
+                    });
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.messages && Array.isArray(data.messages)) {
+                            // Map DB messages to UI format
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            const history = data.messages.map((m: any) => ({
+                                id: m.id,
+                                role: m.role,
+                                content: m.content || '',
+                                timestamp: new Date(m.created_at),
+                                toolCalls: m.tool_calls?.map((tc: any) => ({
+                                    name: tc.tool_name,
+                                    input: tc.tool_input ? JSON.parse(tc.tool_input) : {},
+                                    output: tc.tool_output
+                                }))
+                            }));
+                            setMessages(history);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Failed to load history:', e);
+                }
+            }
+        };
+
+        loadSession();
+    }, [agentId, isEmbed, token, clientId]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -90,6 +186,10 @@ export default function ChatWidget({
                         role: m.role,
                         content: m.content,
                     })),
+                    embedToken: token,
+                    sessionId: sessionId || undefined,
+                    clientName,
+                    clientLevel
                 }),
             });
 
@@ -98,6 +198,7 @@ export default function ChatWidget({
                 const reader = streamResponse.body.getReader();
                 const decoder = new TextDecoder();
                 let finalContent = '';
+                let toolCalls: any[] = [];
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -144,15 +245,41 @@ export default function ChatWidget({
                                         toolName: data.toolName,
                                         stepType: 'processing',
                                     });
-                                } else if (data.type === 'content') {
-                                    setThinkingStatus({
-                                        isThinking: true,
-                                        currentStep: 'Generating response...',
-                                        iteration: data.iteration || 1,
-                                        stepType: 'processing',
-                                    });
+                                } else if (data.type === 'tool_end') {
+                                    if (data.toolName === 'generate_chart') {
+                                        try {
+                                            const input = JSON.parse(data.toolInput);
+                                            
+                                            // Deduplicate identical chart calls in the same message
+                                            const isDuplicate = toolCalls.some(tc => 
+                                                tc.name === 'generate_chart' && 
+                                                tc.input.title === input.title &&
+                                                tc.input.type === input.type &&
+                                                JSON.stringify(tc.input.data) === JSON.stringify(input.data)
+                                            );
+
+                                            if (!isDuplicate) {
+                                                toolCalls.push({
+                                                    name: data.toolName,
+                                                    input: input,
+                                                    output: data.toolOutput
+                                                });
+                                            }
+                                        } catch (e) {
+                                            console.error('Failed to parse chart tool input', e);
+                                        }
+                                    }
                                 } else if (data.type === 'complete') {
                                     finalContent = data.finalResponse || '';
+                                    if (data.sessionId && !sessionId) {
+                                        setSessionId(data.sessionId);
+                                        if (typeof window !== 'undefined') {
+                                            const storageKey = clientId 
+                                                ? `chat_session_${agentId}_${clientId}`
+                                                : `chat_session_${agentId}`;
+                                            localStorage.setItem(storageKey, data.sessionId);
+                                        }
+                                    }
                                 } else if (data.type === 'error') {
                                     finalContent = data.content || 'An error occurred';
                                 }
@@ -169,6 +296,7 @@ export default function ChatWidget({
                         role: 'assistant',
                         content: finalContent,
                         timestamp: new Date(),
+                        toolCalls: toolCalls.length > 0 ? toolCalls : undefined
                     };
                     setMessages((prev) => [...prev, assistantMessage]);
                 }
@@ -189,12 +317,26 @@ export default function ChatWidget({
                             role: m.role,
                             content: m.content,
                         })),
+                        embedToken: token,
+                        clientName,
+                        clientLevel
                     }),
                 });
 
                 if (!response.ok) throw new Error('Failed to get response');
 
                 const data = await response.json();
+
+                // Save session ID if new
+                if (data.sessionId && !sessionId) {
+                    setSessionId(data.sessionId);
+                    if (typeof window !== 'undefined') {
+                        const storageKey = clientId 
+                            ? `chat_session_${agentId}_${clientId}`
+                            : `chat_session_${agentId}`;
+                        localStorage.setItem(storageKey, data.sessionId);
+                    }
+                }
 
                 const assistantMessage: Message = {
                     id: (Date.now() + 1).toString(),
@@ -228,45 +370,84 @@ export default function ChatWidget({
         setIsMaximized(!isMaximized);
     };
 
+    const handleClearChat = () => {
+        if (confirm('Are you sure you want to clear the chat history?')) {
+            setMessages([]);
+            if (typeof window !== 'undefined') {
+                 const storageKey = clientId 
+                    ? `chat_session_${agentId}_${clientId}`
+                    : `chat_session_${agentId}`;
+                localStorage.removeItem(storageKey);
+                setSessionId(null);
+            }
+        }
+    };
+
+    const customStyles = {
+        ...(primaryColor ? { '--widget-primary': primaryColor } : {}),
+        ...(secondaryColor ? { '--widget-secondary': secondaryColor } : {}),
+        ...(textColor ? { '--widget-text': textColor } : {}),
+        ...(bgColor ? { '--widget-bg': bgColor } : {}),
+    } as React.CSSProperties;
+
     return (
-        <div className={`${styles.container} ${isMaximized ? styles.maximized : ''}`}>
+        <div 
+            className={isEmbed ? styles.fullPageContainer : `${styles.container} ${isMaximized ? styles.maximized : ''}`}
+            style={customStyles}
+        >
             {/* Chat Window */}
             {isOpen && (
-                <div className={`${styles.window} ${isMaximized ? styles.windowMaximized : ''}`}>
+                <div className={isEmbed ? styles.fullPageWindow : `${styles.window} ${isMaximized ? styles.windowMaximized : ''}`}>
                     {/* Header */}
                     <div className={styles.header}>
                         <div className={styles.headerInfo}>
                             <div className={styles.headerIcon}>
-                                <Bot size={20} />
+                                {logoUrl ? (
+                                    <img src={logoUrl} alt="Logo" className="w-6 h-6 rounded-full object-cover" />
+                                ) : (
+                                    <Bot size={20} />
+                                )}
                             </div>
                             <div>
-                                <div className={styles.headerTitle}>{agentName}</div>
+                                <div className={styles.headerTitle}>{title || agentName}</div>
                                 <div className={styles.headerStatus}>
                                     <span className={styles.statusDot}></span>
-                                    Online
+                                    {subtitle || 'Online'}
                                 </div>
                             </div>
                         </div>
                         <div className={styles.headerActions}>
                             <button
                                 className={styles.headerButton}
-                                onClick={toggleMaximize}
-                                aria-label={isMaximized ? 'Minimize chat' : 'Maximize chat'}
-                                title={isMaximized ? 'Minimize' : 'Maximize'}
+                                onClick={handleClearChat}
+                                aria-label="Clear chat"
+                                title="Clear Chat"
                             >
-                                {isMaximized ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+                                <RotateCcw size={18} />
                             </button>
-                            <button
-                                className={styles.headerButton}
-                                onClick={() => {
-                                    setIsOpen(false);
-                                    setIsMaximized(false);
-                                }}
-                                aria-label="Close chat"
-                                title="Close"
-                            >
-                                <X size={20} />
-                            </button>
+                            {!isEmbed && (
+                                <>
+                                    <button
+                                        className={styles.headerButton}
+                                        onClick={toggleMaximize}
+                                        aria-label={isMaximized ? 'Minimize chat' : 'Maximize chat'}
+                                        title={isMaximized ? 'Minimize' : 'Maximize'}
+                                    >
+                                        {isMaximized ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+                                    </button>
+                                    <button
+                                        className={styles.headerButton}
+                                        onClick={() => {
+                                            setIsOpen(false);
+                                            setIsMaximized(false);
+                                        }}
+                                        aria-label="Close chat"
+                                        title="Close"
+                                    >
+                                        <X size={20} />
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
 
@@ -274,8 +455,12 @@ export default function ChatWidget({
                     <div className={styles.messages}>
                         {messages.length === 0 && !isLoading && (
                             <div className={styles.emptyState}>
-                                <Bot size={48} />
-                                <p>How can I help you today?</p>
+                                {avatarUrl ? (
+                                    <img src={avatarUrl} alt={agentName} className="w-12 h-12 rounded-full object-cover mb-4" />
+                                ) : (
+                                    <Bot size={48} />
+                                )}
+                                <p>{welcomeMessage || 'How can I help you today?'}</p>
                             </div>
                         )}
                         {messages.map((message) => (
@@ -285,7 +470,13 @@ export default function ChatWidget({
                                     }`}
                             >
                                 <div className={styles.messageAvatar}>
-                                    {message.role === 'user' ? <User size={16} /> : <Bot size={16} />}
+                                    {message.role === 'user' ? (
+                                        <User size={16} />
+                                    ) : avatarUrl ? (
+                                        <img src={avatarUrl} alt={agentName} className="w-4 h-4 rounded-full object-cover" />
+                                    ) : (
+                                        <Bot size={16} />
+                                    )}
                                 </div>
                                 <div className={styles.messageContent}>
                                     {message.role === 'assistant' ? (
@@ -297,6 +488,24 @@ export default function ChatWidget({
                                     ) : (
                                         message.content
                                     )}
+
+                                    {message.toolCalls?.map((tc, idx) => {
+                                        if (tc.name === 'generate_chart') {
+                                            return (
+                                                <ChartRenderer
+                                                    key={`${message.id}-chart-${idx}`}
+                                                    type={tc.input.type}
+                                                    title={tc.input.title}
+                                                    data={tc.input.data}
+                                                    xAxisKey={tc.input.xAxisKey}
+                                                    yAxisKey={tc.input.yAxisKey}
+                                                    primaryColor={primaryColor}
+                                                    colors={tc.input.colors}
+                                                />
+                                            );
+                                        }
+                                        return null;
+                                    })}
                                 </div>
                             </div>
                         ))}
@@ -305,7 +514,11 @@ export default function ChatWidget({
                         {isLoading && thinkingStatus.isThinking && (
                             <div className={`${styles.message} ${styles.assistantMessage}`}>
                                 <div className={styles.messageAvatar}>
-                                    <Bot size={16} />
+                                    {avatarUrl ? (
+                                        <img src={avatarUrl} alt={agentName} className="w-4 h-4 rounded-full object-cover" />
+                                    ) : (
+                                        <Bot size={16} />
+                                    )}
                                 </div>
                                 <div className={styles.thinkingContent}>
                                     <div className={styles.thinkingHeader}>
@@ -350,7 +563,7 @@ export default function ChatWidget({
                             type="text"
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
-                            placeholder="Type your message..."
+                            placeholder={placeholder || "Type your message..."}
                             className={styles.input}
                             disabled={isLoading}
                         />
@@ -366,7 +579,7 @@ export default function ChatWidget({
             )}
 
             {/* Toggle Button */}
-            {!isMaximized && (
+            {!isMaximized && !isEmbed && (
                 <button
                     className={styles.toggleButton}
                     onClick={() => setIsOpen(!isOpen)}

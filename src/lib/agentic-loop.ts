@@ -60,6 +60,8 @@ export type ProgressCallback = (update: {
     iteration: number;
     content: string;
     toolName?: string;
+    toolInput?: string;
+    toolOutput?: string;
 }) => void;
 
 const activeClients: Map<string, Client> = new Map();
@@ -178,6 +180,23 @@ Guidelines:
 - Signal completion by providing a comprehensive final answer
 - Be concise but thorough in your responses
 
+**Data Visualization Capabilities:**
+You can generate interactive charts to visualize data when appropriate (e.g., comparing numbers, showing trends, or displaying parts of a whole).
+
+Use the 'generate_chart' tool to create:
+- **Bar Charts**: Best for comparing distinct categories.
+- **Line Charts**: Best for showing trends over time or continuous data.
+- **Pie Charts**: Best for showing proportions or percentages of a total.
+- **Area Charts**: Best for showing cumulative totals or changes over time with emphasis on volume.
+
+When using 'generate_chart':
+1. Provide a clear 'title' for the chart.
+2. Structure the 'data' as an array of objects where each object has a common label (e.g., 'name', 'month', 'category') and one or more numeric values.
+3. Choose the most appropriate 'type' for the visualization.
+4. **Dynamic Colors**: If a chart needs multi-color representation (especially for **Pie Charts**), you can provide a 'colors' array with contrasting but soft hex colors (e.g., Emerald, Amber, Violet). This ensures segments are clearly distinguishable while maintaining a premium aesthetic.
+
+When user asks for data analysis, ALWAYS consider if a chart would make the information clearer than just text or a table.
+
 When your task is COMPLETE, end your response with: [TASK_COMPLETE]`;
 
 /**
@@ -259,6 +278,95 @@ export async function executeAgenticLoop(
         console.log('Added built-in resource tools: list_mcp_resources, read_mcp_resource');
     }
 
+    // Add built-in export tools (always available)
+    toolDeclarations.push({
+        name: 'export_to_pdf',
+        description: 'Export markdown content to a formatted PDF file. Use when user wants to download, save, or export text/report content. Returns a download URL.',
+        parameters: {
+            type: Type.OBJECT,
+            properties: {
+                content: {
+                    type: Type.STRING,
+                    description: 'The markdown content to export to PDF. Include proper formatting with headers, bullets, etc.',
+                },
+                title: {
+                    type: Type.STRING,
+                    description: 'Title for the PDF document',
+                },
+                filename: {
+                    type: Type.STRING,
+                    description: 'Base filename for the PDF (without extension)',
+                },
+            },
+            required: ['content'],
+        },
+    });
+
+    toolDeclarations.push({
+        name: 'export_to_excel',
+        description: 'Export tabular data to an Excel file. Use when user wants to export tables, lists, or structured data. Data should be JSON array of objects. Returns a download URL.',
+        parameters: {
+            type: Type.OBJECT,
+            properties: {
+                content: {
+                    type: Type.STRING,
+                    description: 'JSON string of data to export. Must be an array of objects with consistent keys, OR a markdown table.',
+                },
+                title: {
+                    type: Type.STRING,
+                    description: 'Title/sheet name for the Excel file',
+                },
+                filename: {
+                    type: Type.STRING,
+                    description: 'Base filename for the Excel file (without extension)',
+                },
+            },
+            required: ['content'],
+        },
+    });
+    toolDeclarations.push({
+        name: 'generate_chart',
+        description: 'Generate an interactive chart (Bar, Line, Pie, Area) to visualize data. Use this when the user asks for a graph, chart, or visual representation of data.',
+        parameters: {
+            type: Type.OBJECT,
+            properties: {
+                type: {
+                    type: Type.STRING,
+                    description: 'The type of chart to generate: "bar", "line", "pie", or "area".',
+                },
+                title: {
+                    type: Type.STRING,
+                    description: 'The title of the chart.',
+                },
+                data: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                    },
+                    description: 'The data to visualize. An array of objects, e.g., [{"name": "Jan", "value": 100}, {"name": "Feb", "value": 200}].',
+                },
+                xAxisKey: {
+                    type: Type.STRING,
+                    description: 'The key in the data objects to use for the X-axis (e.g., "name", "label", "month"). Required for bar, line, and area charts.',
+                },
+                yAxisKey: {
+                    type: Type.STRING,
+                    description: 'The key in the data objects to use for the Y-axis value (e.g., "value", "amount").',
+                },
+                colors: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.STRING,
+                    },
+                    description: 'Optional array of hex colors to use for the chart. Recommended for Pie charts to ensure contrast (soft, premium colors).',
+                },
+            },
+            required: ['type', 'title', 'data', 'xAxisKey', 'yAxisKey'],
+        },
+    });
+
+    console.log('Added built-in export tools: export_to_pdf, export_to_excel, generate_chart');
+
     // Build conversation history
     const combinedSystemPrompt = systemPrompt
         ? `${systemPrompt}\n\n${AGENTIC_SYSTEM_PROMPT}`
@@ -289,7 +397,15 @@ export async function executeAgenticLoop(
     console.log(`Model: ${model}, Max Iterations: ${maxIterations}`);
     console.log(`Tools available: ${toolDeclarations.length}`);
     console.log(`Messages: ${messages.length}`);
-    console.log(`FileSearchStore: ${fileSearchStore ? JSON.stringify({ enabled: fileSearchStore.enabled, store_name: fileSearchStore.store_name }) : 'null'}`);
+    
+    // Log file search store status
+    if (fileSearchStore?.enabled && fileSearchStore?.store_name) {
+        console.log(`[FileSearch] Agentic mode: File Search Store enabled`);
+        console.log(`[FileSearch] Store Name: ${fileSearchStore.store_name}`);
+        console.log(`[FileSearch] Display Name: ${fileSearchStore.display_name}`);
+    } else {
+        console.log(`[FileSearch] Agentic mode: No File Search Store configured`);
+    }
 
     let iteration = 0;
     let taskComplete = false;
@@ -347,17 +463,42 @@ export async function executeAgenticLoop(
 
             let responseText = '';
             const thoughtParts: string[] = [];
-            // Store full parts to preserve thoughtSignature for Gemini 3 Pro
+            // Store all parts to preserve context (text, thoughts, tool calls)
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const functionCallParts: any[] = [];
+            const modelTurnParts: any[] = [];
             const functionCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
 
             for await (const chunk of stream) {
                 console.log(`Chunk received in iteration ${iteration}`);
+                
+                // Log grounding metadata for file search (RAG)
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const candidate = chunk.candidates?.[0] as any;
+                if (candidate?.groundingMetadata) {
+                    console.log(`[FileSearch] Agentic mode: Grounding metadata detected in iteration ${iteration}`);
+                    if (candidate.groundingMetadata.groundingChunks) {
+                        console.log(`[FileSearch] Retrieved ${candidate.groundingMetadata.groundingChunks.length} chunks from file store`);
+                        for (const grndChunk of candidate.groundingMetadata.groundingChunks) {
+                            if (grndChunk.retrievedContext?.uri) {
+                                console.log(`[FileSearch] Source: ${grndChunk.retrievedContext.uri}`);
+                            }
+                            if (grndChunk.retrievedContext?.title) {
+                                console.log(`[FileSearch] Document: ${grndChunk.retrievedContext.title}`);
+                            }
+                        }
+                    }
+                    if (candidate.groundingMetadata.groundingSupports) {
+                        console.log(`[FileSearch] Found ${candidate.groundingMetadata.groundingSupports.length} grounding supports`);
+                    }
+                }
+                
                 if (chunk.candidates?.[0]?.content?.parts) {
                     for (const part of chunk.candidates[0].content.parts) {
                         const partKeys = Object.keys(part);
                         console.log(`Part type: ${partKeys.join(', ')}`);
+
+                        // Collect all parts for conversation history
+                        modelTurnParts.push(part);
 
                         if (part.thought === true && part.text) {
                             thoughtParts.push(part.text);
@@ -368,8 +509,6 @@ export async function executeAgenticLoop(
                             });
                         } else if ('functionCall' in part && part.functionCall) {
                             const fc = part.functionCall as { name: string; args?: Record<string, unknown> };
-                            // Store the full part to preserve thoughtSignature
-                            functionCallParts.push(part);
                             functionCalls.push({
                                 name: fc.name,
                                 args: fc.args || {},
@@ -459,6 +598,57 @@ export async function executeAgenticLoop(
                             status = 'error';
                             toolResult = { error: `Failed to read resource: ${err}` };
                         }
+                    } else if (fc.name === 'export_to_pdf' || fc.name === 'export_to_excel') {
+                        // Handle built-in export tools
+                        const exportType = fc.name === 'export_to_pdf' ? 'pdf' : 'excel';
+                        const content = fc.args.content as string;
+                        const title = fc.args.title as string | undefined;
+                        const filename = fc.args.filename as string | undefined;
+
+                        console.log(`[Export] Executing ${fc.name} tool...`);
+
+                        try {
+                            // Get base URL
+                            const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+                            
+                            // Call export API
+                            const response = await fetch(`${baseUrl}/api/agents/export`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    type: exportType,
+                                    content,
+                                    title,
+                                    filename,
+                                }),
+                            });
+
+                            if (!response.ok) {
+                                const errorData = await response.json();
+                                throw new Error(errorData.error || 'Export failed');
+                            }
+
+                            const result = await response.json();
+                            console.log(`[Export] Generated ${exportType.toUpperCase()}: ${result.downloadUrl}`);
+                            
+                            toolResult = {
+                                success: true,
+                                downloadUrl: result.downloadUrl,
+                                filename: result.filename,
+                                message: `File exported successfully. Download: ${result.downloadUrl}`,
+                            };
+                        } catch (err) {
+                            status = 'error';
+                            console.error(`[Export] Error:`, err);
+                            toolResult = { error: `Failed to export: ${err}` };
+                        }
+                    } else if (fc.name === 'generate_chart') {
+                        // Built-in tool handled by frontend
+                        console.log(`[Chart] Handled built-in tool: ${fc.name}`);
+                        toolResult = {
+                            success: true,
+                            message: 'Chart generated and displayed to user.',
+                        };
                     } else {
                         // Find the right MCP client and call the tool
                         for (const { client } of mcpClients) {
@@ -510,6 +700,8 @@ export async function executeAgenticLoop(
                         iteration,
                         content: `Tool ${fc.name} completed (${toolRecord.executionTimeMs}ms)`,
                         toolName: fc.name,
+                        toolInput: toolRecord.toolInput,
+                        toolOutput: toolRecord.toolOutput,
                     });
 
                     // Prepare function response for next iteration
@@ -521,11 +713,11 @@ export async function executeAgenticLoop(
                     });
                 }
 
-                // Add function call and response to conversation for next iteration
-                // Use the raw functionCallParts to preserve thoughtSignature for Gemini 3 Pro
+                // Add full model response and tool results to conversation for next iteration
+                // Using modelTurnParts preserves text, thoughts, and function calls correctly
                 contents.push({
                     role: 'model',
-                    parts: functionCallParts,
+                    parts: modelTurnParts,
                 });
 
                 contents.push({
