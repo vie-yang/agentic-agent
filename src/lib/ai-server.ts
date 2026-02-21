@@ -406,11 +406,10 @@ export async function generateChatWithMCP(
         console.log(`[FileSearch] Simple mode: No File Search Store configured`);
     }
 
-    // Build file search tool config if available
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const fileSearchTool: any = fileSearchStore?.enabled && fileSearchStore?.store_name
-        ? { fileSearch: { fileSearchStoreNames: [fileSearchStore.store_name] } }
-        : null;
+    // Conditionally add RAG knowledge base search tool
+    if (fileSearchStore?.enabled && fileSearchStore?.store_name) {
+        console.log(`[RAG Tool] Simple mode: registering search_knowledge_base for store: ${fileSearchStore.store_name}`);
+    }
 
     // If no MCP configs, do basic generation with thinking (using stream to capture thoughts)
     if (enabledConfigs.length === 0) {
@@ -418,13 +417,25 @@ export async function generateChatWithMCP(
         const tools: any[] = [];
         
         // Add export tools (always available)
-        tools.push({ functionDeclarations: getExportToolDeclarations() });
+        tools.push({ functionDeclarations: [
+            ...getExportToolDeclarations(),
+            // Add RAG knowledge base search tool if available
+            ...(fileSearchStore?.enabled && fileSearchStore?.store_name ? [{
+                name: 'search_knowledge_base',
+                description: `Search the agent's knowledge base (RAG) for relevant documents. Use this tool when the user asks questions that might be answered by uploaded documents or internal knowledge. The knowledge base name is: "${fileSearchStore.display_name}".`,
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        query: {
+                            type: Type.STRING,
+                            description: 'The search query to find relevant documents in the knowledge base. Be specific and descriptive for best results.',
+                        },
+                    },
+                    required: ['query'],
+                },
+            }] : []),
+        ] });
         console.log(`[Export] Added export tools to simple generation`);
-        
-        if (fileSearchTool) {
-            tools.push(fileSearchTool);
-            console.log(`[FileSearch] Adding File Search tool to simple generation`);
-        }
 
         const stream = await genAI.models.generateContentStream({
             model: model,
@@ -443,29 +454,9 @@ export async function generateChatWithMCP(
         // Collect response, thoughts, and function calls from stream
         let responseText = '';
         const thoughtParts: string[] = [];
-        let fileSearchUsed = false;
         const functionCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
 
         for await (const chunk of stream) {
-            // Log grounding metadata for file search
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const candidate = chunk.candidates?.[0] as any;
-            if (candidate?.groundingMetadata) {
-                fileSearchUsed = true;
-                console.log(`[FileSearch] Grounding metadata detected in simple mode`);
-                if (candidate.groundingMetadata.groundingChunks) {
-                    console.log(`[FileSearch] Retrieved ${candidate.groundingMetadata.groundingChunks.length} chunks from file store`);
-                    for (const grndChunk of candidate.groundingMetadata.groundingChunks) {
-                        if (grndChunk.retrievedContext?.uri) {
-                            console.log(`[FileSearch] Source: ${grndChunk.retrievedContext.uri}`);
-                        }
-                    }
-                }
-                if (candidate.groundingMetadata.groundingSupports) {
-                    console.log(`[FileSearch] Found ${candidate.groundingMetadata.groundingSupports.length} grounding supports`);
-                }
-            }
-
             if (chunk.candidates?.[0]?.content?.parts) {
                 for (const part of chunk.candidates[0].content.parts) {
                     // Check for function call
@@ -475,7 +466,7 @@ export async function generateChatWithMCP(
                             name: fc.name,
                             args: fc.args || {},
                         });
-                        console.log(`[Export] Simple mode: Function call detected: ${fc.name}`);
+                        console.log(`[Simple] Function call detected: ${fc.name}`);
                     } else if (part.text) {
                         if (part.thought === true) {
                             thoughtParts.push(part.text);
@@ -485,10 +476,6 @@ export async function generateChatWithMCP(
                     }
                 }
             }
-        }
-
-        if (fileSearchTool && !fileSearchUsed) {
-            console.log(`[FileSearch] File Search was enabled but no retrieval occurred (query may not have matched any documents)`);
         }
 
         const thoughts = thoughtParts.length > 0 ? thoughtParts.join('\n\n') : null;
@@ -507,7 +494,6 @@ export async function generateChatWithMCP(
                     }
                 } else if (fc.name === 'generate_chart') {
                     // Manual chart handling for non-agentic mode if needed
-                    // For now, we'll just track it and let the frontend handle the tool call
                     toolCalls.push({
                         toolName: fc.name,
                         toolInput: JSON.stringify(fc.args),
@@ -515,6 +501,82 @@ export async function generateChatWithMCP(
                         executionTimeMs: 0,
                         status: 'success',
                     });
+                } else if (fc.name === 'search_knowledge_base') {
+                    // RAG knowledge base search via separate Gemini API call
+                    const searchQuery = fc.args.query as string;
+                    console.log(`[RAG Tool] Simple mode: Searching knowledge base with query: "${searchQuery}"`);
+                    const startTime = Date.now();
+
+                    try {
+                        const ragResponse = await genAI.models.generateContent({
+                            model: model,
+                            contents: [{ role: 'user', parts: [{ text: searchQuery }] }],
+                            config: {
+                                tools: [{
+                                    fileSearch: {
+                                        fileSearchStoreNames: [fileSearchStore!.store_name],
+                                    },
+                                }],
+                            },
+                        });
+
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        const ragCandidate = ragResponse.candidates?.[0] as any;
+                        const groundingChunks = ragCandidate?.groundingMetadata?.groundingChunks || [];
+                        let ragResultText = '';
+
+                        if (groundingChunks.length > 0) {
+                            const retrievedDocs = groundingChunks
+                                .filter((chunk: { retrievedContext?: unknown }) => chunk.retrievedContext)
+                                .map((chunk: { retrievedContext: { title?: string; uri?: string; text?: string } }) => ({
+                                    title: chunk.retrievedContext.title || 'Untitled',
+                                    uri: chunk.retrievedContext.uri || '',
+                                    text: chunk.retrievedContext.text || '',
+                                }));
+
+                            ragResultText = JSON.stringify({
+                                success: true,
+                                query: searchQuery,
+                                documentsFound: retrievedDocs.length,
+                                documents: retrievedDocs,
+                                summary: ragResponse.text || '',
+                            });
+                        } else {
+                            ragResultText = JSON.stringify({
+                                success: true,
+                                query: searchQuery,
+                                documentsFound: 0,
+                                documents: [],
+                                summary: ragResponse.text || 'No relevant documents found.',
+                            });
+                        }
+
+                        // Now do a follow-up call with the RAG context to get proper response
+                        const ragContext = JSON.parse(ragResultText);
+                        const contextText = ragContext.documents.length > 0
+                            ? ragContext.documents.map((d: { title: string; text: string }) => `[${d.title}]: ${d.text}`).join('\n\n')
+                            : ragContext.summary;
+
+                        // Append RAG context directly to the response
+                        responseText += `\n\n${contextText ? `Based on knowledge base:\n${ragResponse.text || contextText}` : ''}`;
+
+                        toolCalls.push({
+                            toolName: fc.name,
+                            toolInput: JSON.stringify(fc.args),
+                            toolOutput: ragResultText,
+                            executionTimeMs: Date.now() - startTime,
+                            status: 'success',
+                        });
+                    } catch (ragError) {
+                        console.error(`[RAG Tool] Simple mode error:`, ragError);
+                        toolCalls.push({
+                            toolName: fc.name,
+                            toolInput: JSON.stringify(fc.args),
+                            toolOutput: JSON.stringify({ error: String(ragError) }),
+                            executionTimeMs: Date.now() - startTime,
+                            status: 'error',
+                        });
+                    }
                 }
             }
 
@@ -558,18 +620,29 @@ export async function generateChatWithMCP(
     }
 
     try {
-        // Build all tools (MCP + File Search + Export)
+        // Build all tools (MCP + Export + RAG)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const allTools: any[] = [...mcpTools];
         
-        // Add export tools
-        allTools.push({ functionDeclarations: getExportToolDeclarations() });
+        // Add export tools + RAG knowledge base search tool
+        allTools.push({ functionDeclarations: [
+            ...getExportToolDeclarations(),
+            ...(fileSearchStore?.enabled && fileSearchStore?.store_name ? [{
+                name: 'search_knowledge_base',
+                description: `Search the agent's knowledge base (RAG) for relevant documents. Use this tool when the user asks questions that might be answered by uploaded documents or internal knowledge. The knowledge base name is: "${fileSearchStore.display_name}".`,
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        query: {
+                            type: Type.STRING,
+                            description: 'The search query to find relevant documents in the knowledge base. Be specific and descriptive for best results.',
+                        },
+                    },
+                    required: ['query'],
+                },
+            }] : []),
+        ] });
         console.log(`[Export] Added export tools to MCP mode`);
-        
-        if (fileSearchTool) {
-            allTools.push(fileSearchTool);
-            console.log(`[FileSearch] Adding File Search tool alongside MCP tools`);
-        }
 
         // First generate to check if tool calls are needed
         const initialResponse = await genAI.models.generateContent({

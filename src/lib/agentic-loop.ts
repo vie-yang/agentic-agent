@@ -369,6 +369,25 @@ export async function executeAgenticLoop(
 
     console.log('Added built-in export tools: export_to_pdf, export_to_excel, generate_chart');
 
+    // Add RAG knowledge base search tool (replaces native fileSearch to avoid Gemini limitation)
+    if (fileSearchStore?.enabled && fileSearchStore?.store_name) {
+        toolDeclarations.push({
+            name: 'search_knowledge_base',
+            description: `Search the agent's knowledge base (RAG) for relevant documents. Use this tool when the user asks questions that might be answered by uploaded documents or internal knowledge. The knowledge base name is: "${fileSearchStore.display_name}".`,
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    query: {
+                        type: Type.STRING,
+                        description: 'The search query to find relevant documents in the knowledge base. Be specific and descriptive for best results.',
+                    },
+                },
+                required: ['query'],
+            },
+        });
+        console.log(`[RAG Tool] Registered search_knowledge_base tool for store: ${fileSearchStore.store_name}`);
+    }
+
     // Build conversation history
     const combinedSystemPrompt = systemPrompt
         ? `${systemPrompt}\n\n${AGENTIC_SYSTEM_PROMPT}`
@@ -441,25 +460,9 @@ export async function executeAgenticLoop(
                         includeThoughts: true,
                         thinkingBudget: 8192,
                     },
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    tools: (() => {
-                        const allTools: any[] = [];
-                        // MCP function declarations
-                        if (toolDeclarations.length > 0) {
-                            allTools.push({
-                                functionDeclarations: toolDeclarations,
-                            });
-                        }
-                        // File Search tool for RAG
-                        if (fileSearchStore?.enabled && fileSearchStore?.store_name) {
-                            allTools.push({
-                                fileSearch: {
-                                    fileSearchStoreNames: [fileSearchStore.store_name],
-                                },
-                            });
-                        }
-                        return allTools.length > 0 ? allTools : undefined;
-                    })(),
+                    tools: toolDeclarations.length > 0
+                        ? [{ functionDeclarations: toolDeclarations }]
+                        : undefined,
                 },
             });
 
@@ -472,27 +475,6 @@ export async function executeAgenticLoop(
 
             for await (const chunk of stream) {
                 console.log(`Chunk received in iteration ${iteration}`);
-                
-                // Log grounding metadata for file search (RAG)
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const candidate = chunk.candidates?.[0] as any;
-                if (candidate?.groundingMetadata) {
-                    console.log(`[FileSearch] Agentic mode: Grounding metadata detected in iteration ${iteration}`);
-                    if (candidate.groundingMetadata.groundingChunks) {
-                        console.log(`[FileSearch] Retrieved ${candidate.groundingMetadata.groundingChunks.length} chunks from file store`);
-                        for (const grndChunk of candidate.groundingMetadata.groundingChunks) {
-                            if (grndChunk.retrievedContext?.uri) {
-                                console.log(`[FileSearch] Source: ${grndChunk.retrievedContext.uri}`);
-                            }
-                            if (grndChunk.retrievedContext?.title) {
-                                console.log(`[FileSearch] Document: ${grndChunk.retrievedContext.title}`);
-                            }
-                        }
-                    }
-                    if (candidate.groundingMetadata.groundingSupports) {
-                        console.log(`[FileSearch] Found ${candidate.groundingMetadata.groundingSupports.length} grounding supports`);
-                    }
-                }
                 
                 if (chunk.candidates?.[0]?.content?.parts) {
                     for (const part of chunk.candidates[0].content.parts) {
@@ -654,6 +636,62 @@ export async function executeAgenticLoop(
                             success: true,
                             message: 'Chart generated and displayed to user.',
                         };
+                    } else if (fc.name === 'search_knowledge_base') {
+                        // RAG knowledge base search via separate Gemini API call
+                        const searchQuery = fc.args.query as string;
+                        console.log(`[RAG Tool] Searching knowledge base with query: "${searchQuery}"`);
+
+                        try {
+                            const ragResponse = await genAI.models.generateContent({
+                                model: model,
+                                contents: [{ role: 'user', parts: [{ text: searchQuery }] }],
+                                config: {
+                                    tools: [{
+                                        fileSearch: {
+                                            fileSearchStoreNames: [fileSearchStore!.store_name],
+                                        },
+                                    }],
+                                },
+                            });
+
+                            // Extract grounding chunks from the response
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            const ragCandidate = ragResponse.candidates?.[0] as any;
+                            const groundingChunks = ragCandidate?.groundingMetadata?.groundingChunks || [];
+
+                            if (groundingChunks.length > 0) {
+                                const retrievedDocs = groundingChunks
+                                    .filter((chunk: { retrievedContext?: unknown }) => chunk.retrievedContext)
+                                    .map((chunk: { retrievedContext: { title?: string; uri?: string; text?: string } }) => ({
+                                        title: chunk.retrievedContext.title || 'Untitled',
+                                        uri: chunk.retrievedContext.uri || '',
+                                        text: chunk.retrievedContext.text || '',
+                                    }));
+
+                                console.log(`[RAG Tool] Retrieved ${retrievedDocs.length} document chunks`);
+
+                                toolResult = {
+                                    success: true,
+                                    query: searchQuery,
+                                    documentsFound: retrievedDocs.length,
+                                    documents: retrievedDocs,
+                                    summary: ragResponse.text || '',
+                                };
+                            } else {
+                                console.log(`[RAG Tool] No grounding chunks found, using response text`);
+                                toolResult = {
+                                    success: true,
+                                    query: searchQuery,
+                                    documentsFound: 0,
+                                    documents: [],
+                                    summary: ragResponse.text || 'No relevant documents found in the knowledge base.',
+                                };
+                            }
+                        } catch (ragError) {
+                            console.error(`[RAG Tool] Error searching knowledge base:`, ragError);
+                            status = 'error';
+                            toolResult = { error: `Failed to search knowledge base: ${ragError}` };
+                        }
                     } else {
                         // Find the right MCP client and call the tool
                         for (const { client } of mcpClients) {
