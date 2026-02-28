@@ -130,7 +130,15 @@ export async function middleware(request: NextRequest) {
 
     // Skip auth check for public paths (+ setup page if we got here)
     if (isPublicPath(pathname) || pathname === '/setup') {
-        return NextResponse.next();
+        const response = NextResponse.next();
+        // For embed routes, allow iframe embedding by removing X-Frame-Options
+        // and setting a permissive CSP frame-ancestors.
+        // Domain validation is handled by the embed page itself via referer check.
+        if (pathname.startsWith('/agents/embed')) {
+            response.headers.delete('X-Frame-Options');
+            response.headers.set('Content-Security-Policy', 'frame-ancestors *');
+        }
+        return response;
     }
 
     // Skip auth check for static files
